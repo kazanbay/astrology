@@ -1,0 +1,33 @@
+[project]
+name = "astrology-rag"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.31.0",
+    "asyncpg>=0.31.0",
+    "openai>=3.21.0",
+    "psycopg2-binary>=2.9.9",
+    "python-dotenv>=1.2.3",
+    "qdrant-client[fastembed]>=1.19.1",
+    "sentence-transformers>=5.1.2,<6",
+    "transformers>=4.41,<5",
+    "torch==2.6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+# --- НАСТРОЙКА CUDA ДЛЯ UV ---
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }

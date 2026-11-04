@@ -1,0 +1,88 @@
+{
+  "generated_at": "2026-11-04T21:58:16.250421+00:00",
+  "elapsed_seconds": 265.32,
+  "books_dir": "C:\\Projects\\Astrology\\books\\vronsky",
+  "documents": 9,
+  "load_errors": [],
+  "embedding_model": "BAAI/bge-m3",
+  "vector_size": null,
+  "dry_run": true,
+  "strategies": {
+    "fixed_500": {
+      "description": "Fixed-size 500 tokens with 50-token overlap, no document structure.",
+      "collection": "vronsky_fixed_500",
+      "stats": {
+        "strategy": "fixed_500",
+        "collection": "vronsky_fixed_500",
+        "documents": 9,
+        "chunks": 2952,
+        "parents": 0,
+        "total_tokens": 1473391,
+        "total_chars": 5696859,
+        "min_chars": 409,
+        "max_chars": 2397,
+        "avg_chars": 1929.8,
+        "avg_tokens": 499.1
+      },
+      "upload": null,
+      "error": null
+    },
+    "semantic_paragraph": {
+      "description": "Paragraph-based chunks merged up to ~300-400 characters.",
+      "collection": "vronsky_semantic_paragraph",
+      "stats": {
+        "strategy": "semantic_paragraph",
+        "collection": "vronsky_semantic_paragraph",
+        "documents": 9,
+        "chunks": 15763,
+        "parents": 0,
+        "total_tokens": 1502449,
+        "total_chars": 5600068,
+        "min_chars": 17,
+        "max_chars": 450,
+        "avg_chars": 355.3,
+        "avg_tokens": 95.3
+      },
+      "upload": null,
+      "error": null
+    },
+    "structural_xml": {
+      "description": "One FB2 <section>/<title> per chunk, soft split over 1500 characters.",
+      "collection": "vronsky_structural_xml",
+      "stats": {
+        "strategy": "structural_xml",
+        "collection": "vronsky_structural_xml",
+        "documents": 9,
+        "chunks": 4782,
+        "parents": 0,
+        "total_tokens": 1370835,
+        "total_chars": 5244489,
+        "min_chars": 17,
+        "max_chars": 1500,
+        "avg_chars": 1096.7,
+        "avg_tokens": 286.7
+      },
+      "upload": null,
+      "error": null
+    },
+    "parent_child": {
+      "description": "100-150 token children linked to 1000+ token parent sections.",
+      "collection": "vronsky_parent_child",
+      "stats": {
+        "strategy": "parent_child",
+        "collection": "vronsky_parent_child",
+        "documents": 9,
+        "chunks": 11269,
+        "parents": 1157,
+        "total_tokens": 1527913,
+        "total_chars": 5892284,
+        "min_chars": 50,
+        "max_chars": 783,
+        "avg_chars": 522.9,
+        "avg_tokens": 135.6
+      },
+      "upload": null,
+      "error": null
+    }
+  }
+}
