@@ -34,7 +34,7 @@ class UploadResult:
 
 
 def chunk_payload(chunk: Chunk, *, embedding_model: str) -> dict[str, Any]:
-    """Build the identical payload schema used by all four collections."""
+    """Build the flat, filterable payload schema shared by all four collections."""
     section_path = list(chunk.section_path)
     return {
         "chunk_id": chunk.chunk_id,
@@ -44,11 +44,16 @@ def chunk_payload(chunk: Chunk, *, embedding_model: str) -> dict[str, Any]:
         "source": chunk.source,
         "title": chunk.title,
         "content": chunk.content,
+        "language": chunk.language,
+        "planet": chunk.planet,
+        "sign": chunk.sign,
+        "house": chunk.house,
+        "aspect": chunk.aspect,
+        "school": chunk.school,
         "chunk_index": chunk.chunk_index,
         "section_path": section_path,
         "section_title": chunk.section_title,
         "chapter_title": chunk.chapter_title,
-        "hierarchy_path": section_path,
         "token_count": chunk.token_count,
         "char_count": chunk.char_count,
         "part_index": chunk.part_index,
@@ -57,16 +62,36 @@ def chunk_payload(chunk: Chunk, *, embedding_model: str) -> dict[str, Any]:
         "parent_content": chunk.parent_content,
         "parent_token_count": chunk.parent_token_count,
         "parent_paths": [list(path) for path in chunk.parent_paths],
-        "meta_tags": chunk.meta_tags,
-        "metadata": {
-            "strategy": chunk.strategy,
-            "hierarchy_path": section_path,
-            "chapter_title": chunk.chapter_title,
-            "section_title": chunk.section_title,
-            "meta_tags": chunk.meta_tags,
-        },
         "embedding_model": embedding_model,
     }
+
+
+def ensure_payload_indexes(client: Any, name: str) -> None:
+    """Create keyword/integer indexes used by agent-side payload filters."""
+    from qdrant_client import models
+
+    indexes: tuple[tuple[str, Any], ...] = (
+        ("strategy", models.PayloadSchemaType.KEYWORD),
+        ("book_id", models.PayloadSchemaType.KEYWORD),
+        ("section_title", models.PayloadSchemaType.KEYWORD),
+        ("chunk_index", models.PayloadSchemaType.INTEGER),
+        ("language", models.PayloadSchemaType.KEYWORD),
+        ("planet", models.PayloadSchemaType.KEYWORD),
+        ("sign", models.PayloadSchemaType.KEYWORD),
+        ("house", models.PayloadSchemaType.INTEGER),
+        ("aspect", models.PayloadSchemaType.KEYWORD),
+        ("school", models.PayloadSchemaType.KEYWORD),
+    )
+    for field_name, field_schema in indexes:
+        try:
+            client.create_payload_index(
+                collection_name=name,
+                field_name=field_name,
+                field_schema=field_schema,
+                wait=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - an index is an optimization, not a blocker
+            LOGGER.warning("Could not create payload index %s.%s: %s", name, field_name, exc)
 
 
 def ensure_collection(
@@ -103,22 +128,7 @@ def ensure_collection(
         name,
         vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
     )
-    indexes: tuple[tuple[str, Any], ...] = (
-        ("strategy", models.PayloadSchemaType.KEYWORD),
-        ("book_id", models.PayloadSchemaType.KEYWORD),
-        ("section_title", models.PayloadSchemaType.KEYWORD),
-        ("chunk_index", models.PayloadSchemaType.INTEGER),
-    )
-    for field_name, field_schema in indexes:
-        try:
-            client.create_payload_index(
-                collection_name=name,
-                field_name=field_name,
-                field_schema=field_schema,
-                wait=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - an index is an optimization, not a blocker
-            LOGGER.warning("Could not create payload index %s.%s: %s", name, field_name, exc)
+    ensure_payload_indexes(client, name)
     return True
 
 

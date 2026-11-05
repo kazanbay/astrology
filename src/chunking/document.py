@@ -11,6 +11,8 @@ from typing import Iterator
 from uuid import NAMESPACE_URL, uuid5
 from xml.etree import ElementTree as ET
 
+from .tags import DEFAULT_SCHOOL, detect_language, infer_school, normalize_language
+
 
 LOGGER = logging.getLogger(__name__)
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -55,6 +57,8 @@ class BookDocument:
     series: str | None
     volume: str | None
     sections: tuple[Section, ...]
+    language: str = "ru"
+    school: str = DEFAULT_SCHOOL
 
     @property
     def display_title(self) -> str:
@@ -140,7 +144,7 @@ def _volume_number(value: str) -> int | None:
     return ROMAN_VOLUMES.get(value)
 
 
-def _metadata(root: ET.Element, source: str) -> tuple[str, str | None, str | None, str | None]:
+def _metadata(root: ET.Element, source: str) -> tuple[str, str | None, str | None, str | None, str]:
     title_info = next((node for node in root.iter() if _local_name(node.tag) == "title-info"), None)
     if title_info is None:
         raise ValueError("FB2 file has no <title-info> metadata")
@@ -161,7 +165,11 @@ def _metadata(root: ET.Element, source: str) -> tuple[str, str | None, str | Non
     authors = [name for author in _children(title_info, "author") if (name := _author_name(author))]
     author = ", ".join(authors) or None
     volume = f"Том {volume_num}" if volume_num is not None else None
-    return book_title, author, series or None, volume
+
+    annotation = _text(_child(title_info, "annotation"))
+    raw_language = _text(_child(title_info, "lang"))
+    language = normalize_language(raw_language) or detect_language(f"{book_title}\n{annotation}")
+    return book_title, author, series or None, volume, language
 
 
 def _parse_section(element: ET.Element) -> Section:
@@ -179,10 +187,10 @@ def _parse_section(element: ET.Element) -> Section:
     return Section(title=title, paragraphs=tuple(paragraphs), children=children)
 
 
-def parse_fb2(data: bytes, source: str) -> BookDocument:
+def parse_fb2(data: bytes, source: str, *, school: str = DEFAULT_SCHOOL) -> BookDocument:
     """Parse an FB2 byte stream into metadata and a section tree."""
     root = ET.fromstring(data)
-    title, author, series, volume = _metadata(root, source)
+    title, author, series, volume, language = _metadata(root, source)
 
     sections: list[Section] = []
     for body in _children(root, "body"):
@@ -211,6 +219,8 @@ def parse_fb2(data: bytes, source: str) -> BookDocument:
         series=series,
         volume=volume,
         sections=tuple(sections),
+        language=language,
+        school=infer_school(author, default=school),
     )
 
 
@@ -242,7 +252,7 @@ class _SectionBuilder:
         )
 
 
-def parse_text(text: str, source: str) -> BookDocument:
+def parse_text(text: str, source: str, *, school: str = DEFAULT_SCHOOL) -> BookDocument:
     """Parse Markdown headings or plain text into a section tree."""
     source_path = Path(source)
     stem = source_path.stem or source
@@ -296,6 +306,8 @@ def parse_text(text: str, source: str) -> BookDocument:
         series=None,
         volume=None,
         sections=tuple(builder.freeze() for builder in roots),
+        language=detect_language(text),
+        school=infer_school(author, default=school),
     )
 
 
@@ -353,25 +365,25 @@ def path_at(spans: list[BlockSpan], position: int) -> tuple[str, ...]:
     return spans[-1].path
 
 
-def load_file(path: Path, source: str | None = None) -> list[BookDocument]:
+def load_file(path: Path, source: str | None = None, *, school: str = DEFAULT_SCHOOL) -> list[BookDocument]:
     """Load one FB2, ZIP or text file; ZIP files may contain several FB2 books."""
     label = source or path.name
     suffix = path.suffix.lower()
     if suffix == ".fb2":
-        return [parse_fb2(path.read_bytes(), label)]
+        return [parse_fb2(path.read_bytes(), label, school=school)]
     if suffix == ".zip":
         documents: list[BookDocument] = []
         with zipfile.ZipFile(path) as archive:
             for member in sorted(archive.namelist()):
                 if member.lower().endswith(".fb2") and not member.endswith("/"):
-                    documents.append(parse_fb2(archive.read(member), f"{label}!{member}"))
+                    documents.append(parse_fb2(archive.read(member), f"{label}!{member}", school=school))
         return documents
     if suffix in {".txt", ".md", ".markdown"}:
-        return [parse_text(_read_text(path), label)]
+        return [parse_text(_read_text(path), label, school=school)]
     raise ValueError(f"Unsupported book format: {path.suffix or path.name}")
 
 
-def load_corpus(directory: Path) -> LoadReport:
+def load_corpus(directory: Path, *, school: str = DEFAULT_SCHOOL) -> LoadReport:
     """Load every supported book under a directory, collecting recoverable errors."""
     if not directory.is_dir():
         raise NotADirectoryError(f"Books directory does not exist: {directory}")
@@ -385,7 +397,7 @@ def load_corpus(directory: Path) -> LoadReport:
             continue
         relative = path.relative_to(directory).as_posix()
         try:
-            documents.extend(load_file(path, relative))
+            documents.extend(load_file(path, relative, school=school))
         except Exception as exc:  # noqa: BLE001 - one broken book must not stop the corpus
             LOGGER.exception("Could not load %s", relative)
             errors.append((relative, f"{type(exc).__name__}: {exc}"))

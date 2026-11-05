@@ -21,6 +21,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from src.chunking.document import BookDocument, LoadReport, load_corpus  # noqa: E402
+from src.chunking.tags import DEFAULT_SCHOOL  # noqa: E402
 from src.chunking.strategies import (  # noqa: E402
     COLLECTION_NAMES,
     STRATEGIES,
@@ -138,7 +139,12 @@ def _chunk_record(chunk: Chunk) -> dict[str, Any]:
         "part_count": chunk.part_count,
         "parent_id": chunk.parent_id,
         "parent_token_count": chunk.parent_token_count,
-        "meta_tags": chunk.meta_tags,
+        "language": chunk.language,
+        "planet": chunk.planet,
+        "sign": chunk.sign,
+        "house": chunk.house,
+        "aspect": chunk.aspect,
+        "school": chunk.school,
         "content": chunk.content,
     }
 
@@ -205,6 +211,7 @@ def _summary_payload(
         "generated_at": started_at,
         "elapsed_seconds": round(elapsed_seconds, 2),
         "books_dir": str(args.books_dir),
+        "school": args.school,
         "documents": len(report.documents),
         "load_errors": [{"source": source, "error": error} for source, error in report.errors],
         "embedding_model": embedding_model,
@@ -226,6 +233,11 @@ def _summary_payload(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--books-dir", type=Path, default=DEFAULT_BOOKS_DIR)
+    parser.add_argument(
+        "--school",
+        default=DEFAULT_SCHOOL,
+        help=f"School identifier stored in every payload (default: {DEFAULT_SCHOOL})",
+    )
     parser.add_argument(
         "--only",
         type=_parse_strategies,
@@ -283,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     embedding_model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3").strip() or "BAAI/bge-m3"
 
-    report = load_corpus(args.books_dir)
+    report = load_corpus(args.books_dir, school=args.school)
     documents: list[BookDocument] = report.documents
     if args.limit_books is not None:
         if args.limit_books < 1:

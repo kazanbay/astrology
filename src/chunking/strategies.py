@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 from uuid import NAMESPACE_URL, uuid5
 
@@ -15,7 +15,7 @@ from .document import (
     iter_blocks,
     path_at,
 )
-from .tags import extract_meta_tags
+from .tags import extract_chunk_metadata
 from .tokens import Tokenizer, count_tokens, split_spans, trim_to_token_limit
 
 
@@ -65,7 +65,12 @@ class Chunk:
     chunk_index: int
     token_count: int
     char_count: int
-    meta_tags: dict[str, list[object]] = field(default_factory=dict)
+    language: str = "ru"
+    planet: str | None = None
+    sign: str | None = None
+    house: int | None = None
+    aspect: str | None = None
+    school: str = "vronsky"
     parent_id: str | None = None
     parent_content: str | None = None
     parent_token_count: int | None = None
@@ -105,6 +110,12 @@ def _new_chunk(
         raise ValueError("Chunk content must not be empty")
     token_count = count_tokens(clean, tokenizer)
     section_title = path[-1] if path else None
+    metadata = extract_chunk_metadata(
+        section_title or "",
+        clean,
+        language=document.language,
+        school=document.school,
+    )
     return Chunk(
         chunk_id=str(uuid5(NAMESPACE_URL, f"astrology-chunk:{strategy}:{document.book_id}:{index}")),
         strategy=strategy,
@@ -116,7 +127,12 @@ def _new_chunk(
         chunk_index=index,
         token_count=token_count,
         char_count=len(clean),
-        meta_tags=extract_meta_tags(section_title or "", clean),
+        language=metadata.language,
+        planet=metadata.planet,
+        sign=metadata.sign,
+        house=metadata.house,
+        aspect=metadata.aspect,
+        school=metadata.school,
         **extra,
     )
 
@@ -248,12 +264,23 @@ def _semantic_chunks(document: BookDocument, tokenizer: Tokenizer) -> list[Chunk
                 previous = chunks[-1]
                 merged = f"{previous.content}\n\n{body}"
                 if len(merged) <= 450:
+                    metadata = extract_chunk_metadata(
+                        previous.section_title or "",
+                        merged,
+                        language=previous.language,
+                        school=previous.school,
+                    )
                     chunks[-1] = replace(
                         previous,
                         content=merged,
                         token_count=count_tokens(merged, tokenizer),
                         char_count=len(merged),
-                        meta_tags=extract_meta_tags(previous.section_title or "", merged),
+                        language=metadata.language,
+                        planet=metadata.planet,
+                        sign=metadata.sign,
+                        house=metadata.house,
+                        aspect=metadata.aspect,
+                        school=metadata.school,
                     )
                     buffer.clear()
                     return

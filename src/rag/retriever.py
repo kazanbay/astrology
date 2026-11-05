@@ -93,13 +93,22 @@ class QdrantRetriever:
                     document_id = str(document_id)
             else:
                 document_id = 0
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict) or not metadata:
+                metadata = {
+                    "hierarchy_path": payload.get("section_path")
+                    or payload.get("hierarchy_path")
+                    or [],
+                    "chapter_title": payload.get("chapter_title"),
+                    "section_title": payload.get("section_title"),
+                }
             result = {
                 "score": float(point.score),
                 "document_id": document_id,
                 "chunk_id": chunk_id,
                 "title": str(payload.get("title") or ""),
                 "content": str(payload.get("content") or ""),
-                "metadata": payload.get("metadata") or {},
+                "metadata": metadata,
             }
             if include_payload:
                 result["payload"] = payload
