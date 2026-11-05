@@ -12,6 +12,8 @@ dependencies = [
     "sentence-transformers>=5.1.2,<6",
     "transformers>=4.41,<5",
     "torch==2.6.0",
+    # pyswisseph has no wheels for Python 3.12+; pysweph exposes the same swisseph API.
+    "pysweph>=2.10.3.6",
 ]
 
 [tool.pytest.ini_options]

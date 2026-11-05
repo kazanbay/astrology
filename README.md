@@ -9,6 +9,7 @@ books/                 Исходные книги
 init_db.py             Создание схемы PostgreSQL
 src/chunking/          Токенизация, загрузка FB2 и четыре стратегии чанкинга
 src/indexing/          Создание коллекций Qdrant и батчевая загрузка
+src/astronomy/         Эфемериды, дома, знаки и аспекты натальной карты
 src/rag/               Эмбеддинги, поиск в Qdrant и генерация ответов
 src/bot.py             Telegram-бот для вопросов к базе знаний
 scripts/               ETL, сравнение ретриверов и ручные проверки
@@ -116,6 +117,35 @@ uv run src/bot.py
 ```
 
 Текущая модель эмбеддингов — `BAAI/bge-m3` (1024 измерения). Qdrant использует отдельную коллекцию `astrology_chunks`, чтобы не смешивать её с индексами исходного проекта.
+
+## Астрономический калькулятор
+
+`src/astronomy/calculator.py` — ядро натальной карты: положения планет, куспиды домов, знаки и мажорные аспекты. Калькулятор принимает только UTC и не занимается часовыми поясами — перевод локального времени и исторических переводов стрелок остаётся на уровне бэкенда.
+
+```bash
+uv run python scripts/natal_chart.py 1990-08-15T12:00:00+00:00 55.7558 37.6173 --house-system P
+```
+
+То же самое из кода (`src` должна быть в `PYTHONPATH` — так же поступают скрипты и pytest):
+
+```python
+from datetime import datetime, timezone
+
+from astronomy.calculator import calculate_natal_chart
+
+chart = calculate_natal_chart(
+    datetime(1990, 8, 15, 12, 0, tzinfo=timezone.utc),
+    lat=55.7558,
+    lon=37.6173,
+    house_system="P",  # 'P' — Плацидус, 'W' — whole sign, всего 15 систем
+)
+chart.planets["Sun"].longitude, chart.planets["Sun"].sign, chart.asc.house
+chart.to_dict()  # JSON-совместимый слепок для промптов и Langfuse
+```
+
+Планета в `to_dict()` содержит ровно шесть полей: `longitude`, `sign`, `house`, `speed`, `is_retrograde`, `is_stationary`. Аспекты по умолчанию: соединение, секстиль, квадрат, трин и оппозиция с орбисами 8°/6°/7°/8°/8°; орбисы можно переопределить через `orbs`.
+
+Пакет `pysweph` — community-форк `pyswisseph` с тем же модулем `swisseph`: у оригинала нет колёс под Python 3.12+, и на Windows он требует MSVC. Импорт и вызовы совместимы с `pyswisseph`, поэтому замена библиотеки сводится к правке зависимости в `pyproject.toml`.
 
 ## Разработка
 

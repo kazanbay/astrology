@@ -205,6 +205,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "openai" },
     { name = "psycopg2-binary" },
+    { name = "pysweph" },
     { name = "python-dotenv" },
     { name = "qdrant-client", extra = ["fastembed"] },
     { name = "sentence-transformers" },
@@ -223,6 +224,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "openai", specifier = ">=3.21.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
+    { name = "pysweph", specifier = ">=2.10.3.6" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "qdrant-client", extras = ["fastembed"], specifier = ">=1.19.1" },
     { name = "sentence-transformers", specifier = ">=5.1.2,<6" },
@@ -2251,6 +2253,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329, upload-time = "2026-08-17T08:02:48.824Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
+]
+
+[[package]]
+name = "pysweph"
+version = "2.10.3.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/c4/9af783bfa24288f3f27ecd4e8cbcd0a93f980414aab3394de5e111859d10/pysweph-2.10.3.6.tar.gz", hash = "sha256:690080559951f827e95d568dc6764aa8d4bfb4fa8a5435eb5abe24c1e01c166a", size = 974703, upload-time = "2026-02-19T16:27:27.986Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/38/b1b79947cff2370712a2cd907856f73fab91c53548066de7f83656a3bef5/pysweph-2.10.3.6-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:d000807e55d03b2d67ba3f27b81b3287fe00ff64f74647d45b64f4d86f5461f6", size = 335188, upload-time = "2026-02-19T16:26:38.61Z" },
+    { url = "https://files.pythonhosted.org/packages/31/14/56c081fdab7cbf4d02a8756bfe4b0c6eb723f352981c659efc8a4dc26df9/pysweph-2.10.3.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:01d34cca6045173dee762450d7dbbf1bcee204284fca117468c08cb2d2aaa08a", size = 864312, upload-time = "2026-02-19T16:26:40.757Z" },
+    { url = "https://files.pythonhosted.org/packages/38/55/a642832bb0cd582a246955d838ff92e0ac726a009ad8f8842c2d1e358b1b/pysweph-2.10.3.6-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:51b70140f82340c1269d3248e455535585daf412d82551af57d5a912f91bf5f2", size = 836020, upload-time = "2026-02-19T16:26:42.926Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/97/23e9a2ebf699b44ad7d742f49400f912cdc8cf63f7423c4a823117ee0098/pysweph-2.10.3.6-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:15810a915c130eda7fc1df42fb487b6aa2727678621a59b81931baee6407dccc", size = 869437, upload-time = "2026-02-19T16:26:44.894Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/fd/3103f1bca6c2ccc1e03dc8a5544edc9e9c7344e6b45a8cf7c91e8d6465c8/pysweph-2.10.3.6-cp311-cp311-win_amd64.whl", hash = "sha256:2a9d1f3e144860bd3937a0fdd3a295ff4e8ed22ebf188e89e0b6ff7ad896d90b", size = 349842, upload-time = "2026-02-19T16:26:47.057Z" },
+    { url = "https://files.pythonhosted.org/packages/10/a7/b4a8f9460efc66d03d265513eaa363eb7efc5a36b8bf8da69b9eebb1089d/pysweph-2.10.3.6-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f5ed35d94b2d1f2738103162ff78a1b87a8e5214882f470af23508d27dd81e7f", size = 335185, upload-time = "2026-02-19T16:26:49.206Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/8a/6df06956b08c0536c91dfa0d8a0473b56c1a501424b9d2088106741dfbad/pysweph-2.10.3.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fbe43b68fba86bb15136c02cd8913e5f77ab3a36da3e5c193df6a91141e9b521", size = 864401, upload-time = "2026-02-19T16:26:51.368Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/ae/e267cf1ae244428874158ba5bfa50bf6ef0e7f450c7f0c9735a08d919583/pysweph-2.10.3.6-cp312-cp312-musllinux_1_2_i686.whl", hash = "sha256:a05b7abae81f9f3f9d08b7a1555749004590d90b29d7550c2a2a9cce4459d7dd", size = 836036, upload-time = "2026-02-19T16:26:53.304Z" },
+    { url = "https://files.pythonhosted.org/packages/99/a6/24e52debbbcd7d2c7468f897cac65ff1423657e038fa737499ea57dd0d45/pysweph-2.10.3.6-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:17bee47cb7d283f5c6c311f29be65464968b96d3e5c3cb5118443b01e67515f9", size = 869688, upload-time = "2026-02-19T16:26:54.869Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/e7/2349ce769d00c8e3a963dc31335ed519c25e0bab3e2448e4ab0778e9f820/pysweph-2.10.3.6-cp312-cp312-win_amd64.whl", hash = "sha256:0bb00ca91a6d9633376fcf20b62e654fceeb898e6dafc55e4ddd121d8f048d6f", size = 349839, upload-time = "2026-02-19T16:26:57.138Z" },
+    { url = "https://files.pythonhosted.org/packages/05/bc/b06d9f466fa5a710963992d80acd7db03499f8b369b6c8f130e909ac9ae1/pysweph-2.10.3.6-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:cd9ffc6995e523d7dadd32d6b3938a119e5767fbcdcf0c8ae2d037b034af6078", size = 335130, upload-time = "2026-02-19T16:26:58.655Z" },
+    { url = "https://files.pythonhosted.org/packages/22/c7/5b9786b0db4575130183de013ee847ac968fecb321eba4bf2b8615966f84/pysweph-2.10.3.6-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ec2e3baf192faafd06dddf3435e69cde1e64a165e4dc47e8aa4b20ff8da61232", size = 864367, upload-time = "2026-02-19T16:27:00.437Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/85/d6c060a4e75acfdfe52138efc8f655458d17e28990acafd9df09002a3ada/pysweph-2.10.3.6-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:bbec66da749f246c785610ccfc70dac9aa55daf5f2581331693fe4d13e3d0d62", size = 836089, upload-time = "2026-02-19T16:27:02.914Z" },
+    { url = "https://files.pythonhosted.org/packages/36/09/68647a459fcdcf00aaed9df47627eb5f357a7617733a0ca94dcf8703c8ba/pysweph-2.10.3.6-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:65d612d5eca05fe4a60f6d7dbab0d59914e9ca01aa0ad28476c83e8abfc6e7a4", size = 869689, upload-time = "2026-02-19T16:27:05.251Z" },
+    { url = "https://files.pythonhosted.org/packages/57/05/3eba4dc9364768b8453b1cdb54884d10f90d9a514c3be6eb40acb3c87063/pysweph-2.10.3.6-cp313-cp313-win_amd64.whl", hash = "sha256:404c3eb9eec86df06bcc42210d31ba356dd4df8202eb70fc6fa9e0b5bb488b8f", size = 349824, upload-time = "2026-02-19T16:27:06.914Z" },
 ]
 
 [[package]]
