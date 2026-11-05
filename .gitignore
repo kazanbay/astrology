@@ -1,6 +1,17 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.pyc
+*.pyo
+*.log
 books/
+data/strategy_chunks/
+reports/
+.zwork/
+.DS_Store
+Thumbs.db
