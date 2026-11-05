@@ -1,13 +1,24 @@
-"""Initialize the PostgreSQL schema used by the astrology RAG project."""
+"""Initialize the PostgreSQL schema used by the astrology RAG project.
+
+The module owns every table of the project: the knowledge base (schools,
+authors, books, chunks) and the persistent layer of the chart pipeline
+(users, charts_cache, user_chart_requests). All statements are idempotent, so
+running the script on an existing database only adds what is missing.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import os
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import asyncpg
-from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from storage.config import resolve_database_url  # noqa: E402
 
 
 DDL_STATEMENTS: Sequence[str] = (
@@ -48,23 +59,44 @@ DDL_STATEMENTS: Sequence[str] = (
     )""",
     "CREATE INDEX IF NOT EXISTS idx_chunks_meta_tags_gin ON chunks USING GIN (meta_tags)",
     "CREATE INDEX IF NOT EXISTS idx_chunks_book_id ON chunks (book_id)",
+    # --- Persistent layer of the natal chart pipeline -----------------------
+    # 1. Universal users table: Telegram for the MVP, email is reserved for
+    #    the future web/app clients.
+    """CREATE TABLE IF NOT EXISTS users (
+        user_id SERIAL PRIMARY KEY,
+        telegram_id BIGINT UNIQUE,
+        email VARCHAR(255) UNIQUE,
+        first_name VARCHAR(255),
+        last_name VARCHAR(255),
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    # 2. Cache shared by every user with the same birth data (twins included).
+    #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
+    #    language, so one row holds both the ephemeris snapshot and the exact
+    #    knowledge-base chunks retrieved for it.
+    """CREATE TABLE IF NOT EXISTS charts_cache (
+        chart_hash VARCHAR(64) PRIMARY KEY,
+        input_params JSONB NOT NULL,
+        calculated_chart JSONB NOT NULL,
+        retrieved_chunks JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    # 3. Per-user request history: many profiles per user, one chart hash each.
+    """CREATE TABLE IF NOT EXISTS user_chart_requests (
+        request_id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        chart_hash VARCHAR(64) NOT NULL REFERENCES charts_cache(chart_hash) ON DELETE CASCADE,
+        profile_name VARCHAR(100) DEFAULT 'Я',
+        requested_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id)",
+    "CREATE INDEX IF NOT EXISTS idx_user_requests_user_id ON user_chart_requests (user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_user_requests_hash ON user_chart_requests (chart_hash)",
+    # History is always read as "latest N of this user", which the single-column
+    # index cannot serve without a sort.
+    "CREATE INDEX IF NOT EXISTS idx_user_requests_user_requested_at "
+    "ON user_chart_requests (user_id, requested_at DESC)",
 )
-
-
-def _get_database_url() -> str:
-    """Load DATABASE_URL from .env or the process environment."""
-    load_dotenv()
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    if not database_url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. Add it to the project's .env file "
-            "or export it in the environment before initializing the database."
-        )
-
-    # Accept SQLAlchemy-style asyncpg URLs as well as native asyncpg URLs.
-    if database_url.startswith("postgresql+asyncpg://"):
-        database_url = "postgresql://" + database_url.removeprefix("postgresql+asyncpg://")
-    return database_url
 
 
 async def healthcheck(connection: asyncpg.Connection) -> None:
@@ -74,7 +106,7 @@ async def healthcheck(connection: asyncpg.Connection) -> None:
 
 async def init_db() -> None:
     """Create the RAG schema and indexes if they do not already exist."""
-    database_url = _get_database_url()
+    database_url = resolve_database_url()
     connection = await asyncpg.connect(database_url)
     try:
         await healthcheck(connection)

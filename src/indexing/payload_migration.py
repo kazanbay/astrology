@@ -17,7 +17,18 @@ except ImportError:  # pragma: no cover - depends on sys.path layout
 
 LOGGER = logging.getLogger(__name__)
 REMOVED_KEYS = {"meta_tags", "metadata", "hierarchy_path"}
-METADATA_KEYS = ("language", "planet", "sign", "house", "aspect", "school")
+METADATA_KEYS = (
+    "language",
+    "planet",
+    "planet_b",
+    "sign",
+    "sign_b",
+    "house",
+    "house_b",
+    "aspect",
+    "school",
+    "is_transit",
+)
 
 
 def rebuild_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -47,10 +58,14 @@ def rebuild_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     rebuilt.update(
         language=metadata.language,
         planet=metadata.planet,
+        planet_b=metadata.planet_b,
         sign=metadata.sign,
+        sign_b=metadata.sign_b,
         house=metadata.house,
+        house_b=metadata.house_b,
         aspect=metadata.aspect,
         school=metadata.school,
+        is_transit=metadata.is_transit,
     )
     return rebuilt
 

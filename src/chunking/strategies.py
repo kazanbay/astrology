@@ -67,9 +67,13 @@ class Chunk:
     char_count: int
     language: str = "ru"
     planet: str | None = None
+    planet_b: str | None = None
     sign: str | None = None
+    sign_b: str | None = None
     house: int | None = None
+    house_b: int | None = None
     aspect: str | None = None
+    is_transit: bool = False
     school: str = "vronsky"
     parent_id: str | None = None
     parent_content: str | None = None
@@ -129,9 +133,13 @@ def _new_chunk(
         char_count=len(clean),
         language=metadata.language,
         planet=metadata.planet,
+        planet_b=metadata.planet_b,
         sign=metadata.sign,
+        sign_b=metadata.sign_b,
         house=metadata.house,
+        house_b=metadata.house_b,
         aspect=metadata.aspect,
+        is_transit=metadata.is_transit,
         school=metadata.school,
         **extra,
     )

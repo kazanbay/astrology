@@ -1,9 +1,19 @@
-"""Extract canonical astrology entities, language and school for Qdrant payloads."""
+"""Extract canonical astrology entities, language and school for Qdrant payloads.
+
+Structural metadata is read from the section title only: a payload must describe
+the subject of its section, not incidental mentions in the body. This is what
+makes exact-match routing trustworthy — a paragraph that merely says "Сатурн"
+no longer claims to be a Saturn article.
+
+Titles that name two bodies ("ВЕНЕРА – УРАН") or two signs/houses ("Восходящий
+Лунный Узел в знаке Овна. Нисходящий Лунный Узел в знаке Весов") keep the
+second entity in ``planet_b`` / ``sign_b`` / ``house_b`` so pair lookups stay
+order-invariant without losing information.
+"""
 
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass
 
 
@@ -12,7 +22,7 @@ DEFAULT_SCHOOL = "vronsky"
 # Patterns are strings so callers can choose case-sensitive matching for content.
 PLANET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Sun", r"(?<!\w)(?:sun|солнц\w*)(?!\w)"),
-    ("Moon", r"(?<!\w)(?:moon|лун\w*)(?!\w)"),
+    ("Moon", r"(?<!\w)(?:moon|лун\w*)(?!\w)(?!\s+узел)"),
     ("Mercury", r"(?<!\w)(?:mercury|меркур\w*)(?!\w)"),
     ("Venus", r"(?<!\w)(?:venus|венер\w*)(?!\w)"),
     ("Mars", r"(?<!\w)(?:mars|марс\w*)(?!\w)"),
@@ -24,8 +34,17 @@ PLANET_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Chiron", r"(?<!\w)(?:chiron|хирон\w*)(?!\w)"),
     ("Proserpina", r"(?<!\w)(?:proserpina|прозерпин\w*)(?!\w)"),
     ("Lilith", r"(?<!\w)(?:lilith|лилит\w*)(?!\w)"),
-    ("NorthNode", r"(?<!\w)(?:north\s*node|северн\w*\s+узел\w*|раху)(?!\w)"),
-    ("SouthNode", r"(?<!\w)(?:south\s*node|южн\w*\s+узел\w*|кету)(?!\w)"),
+    # The nodes are named in Russian as "Восходящий/Нисходящий Лунный Узел";
+    # these patterns must run before the generic Moon pattern can claim the
+    # adjective "Лунный".
+    (
+        "NorthNode",
+        r"(?<!\w)(?:north\s*node|восходящ\w*\s+лунн\w*\s+узел\w*|северн\w*\s+узел\w*|раху)(?!\w)",
+    ),
+    (
+        "SouthNode",
+        r"(?<!\w)(?:south\s*node|нисходящ\w*\s+лунн\w*\s+узел\w*|южн\w*\s+узел\w*|кету)(?!\w)",
+    ),
 )
 
 SIGN_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -46,7 +65,7 @@ SIGN_PATTERNS: tuple[tuple[str, str], ...] = (
 ASPECT_PATTERNS: tuple[tuple[str, str], ...] = (
     ("conjunction", r"(?<!\w)(?:conjunction|соединени\w*|конъюнкци\w*)(?!\w)"),
     ("square", r"(?<!\w)(?:square|квадрат\w*|квадратур\w*)(?!\w)"),
-    ("trine", r"(?<!\w)(?:trine|трин\w*)(?!\w)"),
+    ("trine", r"(?<!\w)(?:trine|трин(?:а|у|ом|е|ы|ов)?|тригон(?:а|у|ом|е)?)(?!\w)"),
     ("opposition", r"(?<!\w)(?:opposition|оппозици\w*|противостояни\w*)(?!\w)"),
     ("sextile", r"(?<!\w)(?:sextile|секстил\w*)(?!\w)"),
 )
@@ -72,6 +91,8 @@ HOUSE_PATTERNS = (
     re.compile(rf"(?<!\w)({HOUSE_TOKEN})\s*(?:-(?:й|м)\s*)?{HOUSE_WORD}(?!\w)", re.IGNORECASE),
 )
 
+TRANSIT_PATTERN = re.compile(r"транзит", re.IGNORECASE)
+
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 _LATIN = re.compile(r"[A-Za-z]")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
@@ -84,10 +105,14 @@ class ChunkMetadata:
 
     language: str
     planet: str | None
+    planet_b: str | None
     sign: str | None
+    sign_b: str | None
     house: int | None
+    house_b: int | None
     aspect: str | None
     school: str
+    is_transit: bool
 
 
 def roman_or_integer(value: str) -> int | None:
@@ -139,24 +164,13 @@ def _collect(text: str, patterns: tuple[tuple[str, str], ...], *, ignore_case: b
     return sorted(matches)
 
 
-def _pick_entity(
-    title: str,
-    text: str,
-    patterns: tuple[tuple[str, str], ...],
-    *,
-    content_case_sensitive: bool,
-) -> str | None:
-    matches = _collect(title, patterns, ignore_case=True)
-    if not matches:
-        matches = _collect(text, patterns, ignore_case=not content_case_sensitive)
-    if not matches:
-        return None
-
-    counts = Counter(canonical for _position, canonical in matches)
-    first_position: dict[str, int] = {}
-    for position, canonical in matches:
-        first_position.setdefault(canonical, position)
-    return max(counts, key=lambda canonical: (counts[canonical], -first_position[canonical]))
+def _ordered_entities(text: str, patterns: tuple[tuple[str, str], ...]) -> list[str]:
+    """Return distinct canonical names in the order they first appear in ``text``."""
+    ordered: list[str] = []
+    for _position, canonical in _collect(text, patterns, ignore_case=True):
+        if canonical not in ordered:
+            ordered.append(canonical)
+    return ordered
 
 
 def _collect_houses(text: str) -> list[tuple[int, int]]:
@@ -171,15 +185,12 @@ def _collect_houses(text: str) -> list[tuple[int, int]]:
     return sorted(matches)
 
 
-def _pick_house(title: str, text: str) -> int | None:
-    matches = _collect_houses(title) or _collect_houses(text)
-    if not matches:
-        return None
-    counts = Counter(house for _position, house in matches)
-    first_position: dict[int, int] = {}
-    for position, house in matches:
-        first_position.setdefault(house, position)
-    return max(counts, key=lambda house: (counts[house], -first_position[house]))
+def _ordered_houses(text: str) -> list[int]:
+    ordered: list[int] = []
+    for _position, house in _collect_houses(text):
+        if house not in ordered:
+            ordered.append(house)
+    return ordered
 
 
 def extract_chunk_metadata(
@@ -189,15 +200,27 @@ def extract_chunk_metadata(
     language: str | None = None,
     school: str = DEFAULT_SCHOOL,
 ) -> ChunkMetadata:
-    """Extract one scalar value per entity field, preferring the section title."""
+    """Extract structural metadata from the section title.
+
+    ``text`` is used only to detect the language: entity tags must describe the
+    section's own subject, so body mentions are deliberately ignored.
+    """
     title = section_title or ""
+    planets = _ordered_entities(title, PLANET_PATTERNS)
+    signs = _ordered_entities(title, SIGN_PATTERNS)
+    houses = _ordered_houses(title)
+    aspects = _ordered_entities(title, ASPECT_PATTERNS)
     return ChunkMetadata(
         language=normalize_language(language) or detect_language(f"{title}\n{text}"),
-        planet=_pick_entity(title, text, PLANET_PATTERNS, content_case_sensitive=False),
-        sign=_pick_entity(title, text, SIGN_PATTERNS, content_case_sensitive=True),
-        house=_pick_house(title, text),
-        aspect=_pick_entity(title, text, ASPECT_PATTERNS, content_case_sensitive=False),
-        school=school.strip().lower() or DEFAULT_SCHOOL,
+        planet=planets[0] if planets else None,
+        planet_b=planets[1] if len(planets) > 1 else None,
+        sign=signs[0] if signs else None,
+        sign_b=signs[1] if len(signs) > 1 else None,
+        house=houses[0] if houses else None,
+        house_b=houses[1] if len(houses) > 1 else None,
+        aspect=aspects[0] if aspects else None,
+        school=(school or "").strip().lower() or DEFAULT_SCHOOL,
+        is_transit=bool(TRANSIT_PATTERN.search(title)),
     )
 
 
