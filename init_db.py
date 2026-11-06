@@ -2,8 +2,9 @@
 
 The module owns every table of the project: the knowledge base (schools,
 authors, books, chunks) and the persistent layer of the chart pipeline
-(users, charts_cache, user_chart_requests). All statements are idempotent, so
-running the script on an existing database only adds what is missing.
+(users, charts_cache, llm_generations, user_chart_requests). All statements are
+idempotent, so running the script on an existing database only adds what is
+missing.
 """
 
 from __future__ import annotations
@@ -68,8 +69,11 @@ DDL_STATEMENTS: Sequence[str] = (
         email VARCHAR(255) UNIQUE,
         first_name VARCHAR(255),
         last_name VARCHAR(255),
+        display_name VARCHAR(255),
         created_at TIMESTAMP DEFAULT NOW()
     )""",
+    # Existing databases may predate the onboarding flow.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)",
     # 2. Cache shared by every user with the same birth data (twins included).
     #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
     #    language, so one row holds both the ephemeris snapshot and the exact
@@ -81,14 +85,30 @@ DDL_STATEMENTS: Sequence[str] = (
         retrieved_chunks JSONB NOT NULL,
         created_at TIMESTAMP DEFAULT NOW()
     )""",
-    # 3. Per-user request history: many profiles per user, one chart hash each.
+    # 3. Cached LLM reports: one row per (chart, prompt version, model, temperature).
+    """CREATE TABLE IF NOT EXISTS llm_generations (
+        generation_id VARCHAR(64) PRIMARY KEY,
+        chart_hash VARCHAR(64) NOT NULL REFERENCES charts_cache(chart_hash) ON DELETE CASCADE,
+        prompt_version VARCHAR(32) NOT NULL,
+        model_name VARCHAR(128) NOT NULL,
+        temperature NUMERIC(3, 2) NOT NULL,
+        generated_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_llm_generations_chart_hash ON llm_generations (chart_hash)",
+    # 4. Per-user request history: many profiles per user, one chart hash each.
     """CREATE TABLE IF NOT EXISTS user_chart_requests (
         request_id SERIAL PRIMARY KEY,
         user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
         chart_hash VARCHAR(64) NOT NULL REFERENCES charts_cache(chart_hash) ON DELETE CASCADE,
+        generation_id VARCHAR(64) REFERENCES llm_generations(generation_id) ON DELETE SET NULL,
         profile_name VARCHAR(100) DEFAULT 'Я',
         requested_at TIMESTAMP DEFAULT NOW()
     )""",
+    # Databases created before the generation layer keep their rows; this adds
+    # the column in place (idempotent).
+    "ALTER TABLE user_chart_requests ADD COLUMN IF NOT EXISTS generation_id "
+    "VARCHAR(64) REFERENCES llm_generations(generation_id) ON DELETE SET NULL",
     "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users (telegram_id)",
     "CREATE INDEX IF NOT EXISTS idx_user_requests_user_id ON user_chart_requests (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_user_requests_hash ON user_chart_requests (chart_hash)",

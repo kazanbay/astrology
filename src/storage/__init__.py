@@ -30,10 +30,11 @@ from .birth import (
 from .chunks import collect_unique_chunks, element_chunk_index
 from .hashing import CHART_HASH_LENGTH, generate_chart_hash
 from .pipeline import ChartPipeline, ChartResult, calculate_chart
-from .presentation import format_chart_reply, format_history, format_section_previews
+from .presentation import format_chart_reply, format_history, format_section_previews, split_message
 from .store import (
     CachedChart,
     ChartStore,
+    GenerationRecord,
     PostgresChartStore,
     RequestRecord,
     normalize_profile_name,
@@ -48,6 +49,7 @@ __all__ = [
     "ChartPipeline",
     "ChartResult",
     "ChartStore",
+    "GenerationRecord",
     "PostgresChartStore",
     "RequestRecord",
     "calculate_chart",
@@ -65,4 +67,5 @@ __all__ = [
     "normalize_utc",
     "parse_birth_command",
     "parse_local_datetime",
+    "split_message",
 ]

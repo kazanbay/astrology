@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 
@@ -8,6 +8,8 @@ from storage.birth import (
     canonical_utc_string,
     local_to_utc,
     parse_birth_command,
+    parse_birth_date,
+    parse_birth_time,
     parse_local_datetime,
 )
 
@@ -69,6 +71,47 @@ def test_canonical_utc_string_keeps_microseconds_only_when_present():
         canonical_utc_string(datetime(1990, 8, 15, 8, 0, 0, 250000, tzinfo=timezone.utc))
         == "1990-08-15T08:00:00.250000+00:00"
     )
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("15.08.1990", date(1990, 8, 15)),
+        ("5.8.1990", date(1990, 8, 5)),
+        ("15/08/1990", date(1990, 8, 15)),
+        ("15-08-1990", date(1990, 8, 15)),
+        ("1990-08-15", date(1990, 8, 15)),
+    ],
+)
+def test_parse_birth_date_accepts_common_formats(value, expected):
+    assert parse_birth_date(value) == expected
+
+
+@pytest.mark.parametrize("value", ["32.08.1990", "15.13.1990", "1990", "завтра"])
+def test_parse_birth_date_rejects_invalid(value):
+    with pytest.raises(BirthInputError):
+        parse_birth_date(value)
+
+
+def test_parse_birth_date_rejects_future_and_too_old():
+    with pytest.raises(BirthInputError, match="будущем"):
+        parse_birth_date("01.01.2999")
+    with pytest.raises(BirthInputError, match="1900"):
+        parse_birth_date("01.01.1899")
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("12:30", time(12, 30)), ("9.05", time(9, 5)), ("7", time(7, 0)), ("23:59", time(23, 59))],
+)
+def test_parse_birth_time_accepts_common_formats(value, expected):
+    assert parse_birth_time(value) == expected
+
+
+@pytest.mark.parametrize("value", ["24:00", "12:60", "-1:00", "полдень", "12:30:45"])
+def test_parse_birth_time_rejects_invalid(value):
+    with pytest.raises(BirthInputError):
+        parse_birth_time(value)
 
 
 def test_birth_data_normalizes_codes():

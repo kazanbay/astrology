@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from rag.retriever import COLLECTION_NAME, QdrantRetriever
@@ -12,7 +11,7 @@ class FakeModel:
 
     def encode(self, text, **kwargs):
         self.queries.append((text, kwargs))
-        return np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        return [[0.1, 0.2, 0.3]]
 
 
 class FakeClient:

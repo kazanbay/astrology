@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
-from src.rag.embedding import DEVICE, load_bge_model  # noqa: E402
+from src.rag.embedding import get_embedding_backend  # noqa: E402
 from src.rag.retriever import COLLECTION_NAME  # noqa: E402
 
 
@@ -136,16 +136,13 @@ def index_chunks(chunks: list[tuple], *, recreate: bool = False) -> int:
         if not pending:
             return client.count(collection_name=COLLECTION_NAME, exact=True).count
 
-        model = load_bge_model()
-        print(f"Encoding batches of {BATCH_SIZE} on {DEVICE}", flush=True)
+        model = get_embedding_backend()
+        print(f"Encoding batches of {BATCH_SIZE} with {model.model_name}", flush=True)
         uploaded = 0
         for batch in _batches(pending, BATCH_SIZE):
             vectors = model.encode(
                 [chunk[3] for chunk in batch],
                 batch_size=BATCH_SIZE,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
             )
             points = []
             for chunk, vector in zip(batch, vectors, strict=True):
@@ -155,7 +152,7 @@ def index_chunks(chunks: list[tuple], *, recreate: bool = False) -> int:
                 points.append(
                     models.PointStruct(
                         id=chunk_id,
-                        vector=vector.tolist(),
+                        vector=vector,
                         payload={
                             "chunk_id": chunk_id,
                             "book_id": book_id,

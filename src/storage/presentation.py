@@ -8,6 +8,8 @@ sync.
 
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
@@ -46,6 +48,17 @@ SIGN_LABELS_RU: dict[str, str] = {
 
 TELEGRAM_MESSAGE_LIMIT = 4096
 DEFAULT_MAX_CHARS = 3800
+#: Report parts are split below the hard limit because HTML tags add length.
+REPORT_PART_LIMIT = 3000
+
+_BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+_HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+#: Markdown list markers Telegram renders as literal stars; replace with a bullet.
+_BULLET_RE = re.compile(r"^([ \t]*)[*+-][ \t]+", re.MULTILINE)
+#: A report heading is one short line wrapped in bold, optionally with an emoji.
+_REPORT_HEADING_RE = re.compile(r"^(?:[^\w\s]{1,4}\s*)?\*\*[^*\n]{1,130}\*\*$")
+#: Roughly four lines of Russian text that must follow a heading in one message.
+MIN_TEXT_AFTER_HEADING = 200
 
 #: Display order of bodies. JSONB does not preserve key order, so the cache
 #: round trip reorders ``chart['planets']``; rendering restores the canonical
@@ -161,8 +174,13 @@ def format_chart_reply(
     *,
     max_sections: int = 8,
     max_chars: int = DEFAULT_MAX_CHARS,
+    technical: bool = True,
 ) -> str:
-    """Render a ``ChartResult`` as a Telegram-sized Russian message."""
+    """Render a ``ChartResult`` as a Telegram-sized Russian message.
+
+    ``technical=True`` (CLI) appends cache state, section counters and titles;
+    the bot passes ``False`` and shows a clean chart card followed by the report.
+    """
     if max_chars < 200:
         raise ValueError("max_chars is too small to render a chart summary")
     if max_sections < 0:
@@ -183,18 +201,19 @@ def format_chart_reply(
 
     total_elements = _element_total(chart)
     stats = element_stats(chunks)
-    lines.append("")
-    lines.append(
-        f"Разделы базы знаний: {stats['elements_with_chunks']} из {total_elements} элементов, "
-        f"{stats['chunks']} уникальных разделов"
-    )
+    if technical:
+        lines.append("")
+        lines.append(
+            f"Разделы базы знаний: {stats['elements_with_chunks']} из {total_elements} элементов, "
+            f"{stats['chunks']} уникальных разделов"
+        )
 
-    cache_state = (
-        "попадание (карта не пересчитывалась)" if getattr(result, "cache_hit", False) else "промах"
-    )
-    if getattr(result, "cache_written", False):
-        cache_state += ", результат сохранён"
-    lines.append(f"Кэш: {cache_state}; хэш {str(result.chart_hash)[:12]}")
+        cache_state = (
+            "попадание (карта не пересчитывалась)" if getattr(result, "cache_hit", False) else "промах"
+        )
+        if getattr(result, "cache_written", False):
+            cache_state += ", результат сохранён"
+        lines.append(f"Кэш: {cache_state}; хэш {str(result.chart_hash)[:12]}")
 
     titles: list[str] = []
     seen: set[str] = set()
@@ -207,7 +226,7 @@ def format_chart_reply(
             break
         titles.append(title)
 
-    if titles:
+    if titles and technical:
         lines.append("")
         lines.append("Найденные разделы:")
         for index, title in enumerate(titles, start=1):
@@ -250,6 +269,101 @@ def format_section_previews(
         body = content if len(content) <= budget else content[:budget].rstrip() + "…"
         previews.append(header + body)
     return previews
+
+
+def _is_report_heading(paragraph: str) -> bool:
+    """True for a short single-line heading such as ``💼 **2. Реализация**``."""
+    line = paragraph.strip()
+    if not line or "\n" in line or len(line) > 140:
+        return False
+    return bool(_REPORT_HEADING_RE.fullmatch(line))
+
+
+def _keep_headings_with_text(parts: list[str], limit: int) -> list[str]:
+    """Never end a message with a heading and never send a heading alone.
+
+    A heading that lands at the tail of a part is moved to the next part. A
+    heading followed by fewer than ~four lines (200 characters) of text is moved
+    as well, and a part that is just a heading is merged into the next one, so
+    the reader always sees the heading together with its text.
+    """
+    index = 0
+    while index < len(parts) - 1:
+        paragraphs = parts[index].split("\n\n")
+        heading_index = next(
+            (position for position in range(len(paragraphs) - 1, -1, -1)
+             if _is_report_heading(paragraphs[position])),
+            None,
+        )
+        if heading_index is None:
+            index += 1
+            continue
+
+        tail = paragraphs[heading_index:]
+        text_after = sum(len(paragraph.strip()) for paragraph in tail[1:])
+        if text_after >= MIN_TEXT_AFTER_HEADING:
+            index += 1
+            continue
+
+        if heading_index > 0:
+            moved = "\n\n".join(tail + [parts[index + 1]]).strip()
+            if len(moved) <= limit:
+                parts[index] = "\n\n".join(paragraphs[:heading_index]).strip()
+                parts[index + 1] = moved
+        else:
+            # The part starts with a heading and has almost no text: glue it to
+            # the next part instead of sending a lone heading.
+            merged = f"{parts[index]}\n\n{parts[index + 1]}".strip()
+            if len(merged) <= TELEGRAM_MESSAGE_LIMIT:
+                parts[index] = merged
+                parts.pop(index + 1)
+                continue
+        index += 1
+    return parts
+
+
+def split_message(text: str, *, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split a long report into Telegram-sized messages without cutting words.
+
+    Prefers paragraph breaks, then line breaks, then spaces; hard-splits only
+    when a single token is longer than the limit.
+    """
+    if limit < 200:
+        raise ValueError("limit is too small to split a report")
+    remaining = (text or "").strip()
+    if not remaining:
+        return []
+
+    parts: list[str] = []
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n\n")
+        if cut < limit // 2:
+            cut = window.rfind("\n")
+        if cut < limit // 2:
+            cut = window.rfind(" ")
+        if cut < limit // 2:
+            cut = limit
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n ")
+    if remaining:
+        parts.append(remaining)
+    return _keep_headings_with_text(parts, limit)
+
+
+def to_telegram_html(text: str) -> str:
+    """Turn the model's lightweight Markdown into Telegram-safe HTML.
+
+    The synthesis prompt asks for ``**bold**`` and forbids ``###`` headings
+    (Telegram renders neither), so the bot converts both into ``<b>`` tags and
+    escapes the rest before sending with ``parse_mode=HTML``.
+    """
+    if not text:
+        return ""
+    escaped = html.escape(text, quote=False)
+    escaped = _HEADING_RE.sub(lambda match: f"<b>{match.group(1)}</b>", escaped)
+    escaped = _BULLET_RE.sub(lambda match: f"{match.group(1)}• ", escaped)
+    return _BOLD_RE.sub(r"<b>\1</b>", escaped)
 
 
 def format_history(records: Iterable[Any], *, max_chars: int = DEFAULT_MAX_CHARS) -> str:

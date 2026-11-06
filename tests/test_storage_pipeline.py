@@ -66,17 +66,21 @@ class FakeStore:
 
     def __init__(self):
         self.users: dict[tuple[str, object], int] = {}
+        self.display_names: dict[tuple[str, object], object] = {}
         self.charts = {}
         self.requests: list[RequestRecord] = []
         self.calls = {"upsert_user": 0, "get_chart": 0, "save_chart": 0, "record_request": 0}
 
-    async def upsert_user(self, *, telegram_id=None, email=None, first_name=None, last_name=None):
+    async def upsert_user(
+        self, *, telegram_id=None, email=None, first_name=None, last_name=None, display_name=None
+    ):
         if telegram_id is None and email is None:
             raise ValueError("a user needs at least one of telegram_id or email")
         self.calls["upsert_user"] += 1
         key = ("telegram", telegram_id) if telegram_id is not None else ("email", email)
         if key not in self.users:
             self.users[key] = len(self.users) + 1
+        self.display_names[key] = display_name
         return self.users[key]
 
     async def find_user(self, *, telegram_id=None, email=None):
@@ -245,6 +249,14 @@ def test_default_house_system_and_language_flow_into_hash():
 
     assert result.input_params["house_system"] == "P"
     assert result.input_params["language"] == "ru"
+
+
+def test_display_name_is_passed_to_the_store():
+    pipeline, store, _builder, _retriever = build_pipeline()
+
+    asyncio.run(pipeline.load(BIRTH, telegram_id=42, display_name="Анна"))
+
+    assert store.display_names[("telegram", 42)] == "Анна"
 
 
 def test_invalid_profile_name_fails_before_touching_the_database():

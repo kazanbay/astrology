@@ -331,21 +331,13 @@ def main(argv: list[str] | None = None) -> int:
 
     vector_size: int | None = None
     if not args.dry_run:
-        from src.rag.embedding import load_bge_model
+        from src.rag.embedding import get_embedding_backend
 
         client = _qdrant_client()
         try:
             try:
-                model = load_bge_model()
-                get_dimension = getattr(model, "get_embedding_dimension", None)
-                dimension = (
-                    get_dimension()
-                    if callable(get_dimension)
-                    else model.get_sentence_embedding_dimension()
-                )
-                if not dimension:
-                    raise RuntimeError("Embedding model did not report its vector dimension")
-                vector_size = int(dimension)
+                model = get_embedding_backend()
+                vector_size = int(model.dimension)
             except Exception as exc:  # noqa: BLE001 - report instead of losing the summary
                 LOGGER.exception("Embedding model failed")
                 for run in runs:

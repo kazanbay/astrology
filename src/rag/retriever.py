@@ -9,7 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from .embedding import load_bge_model
+from .embedding import get_embedding_backend
 
 
 COLLECTION_NAME = "astrology_chunks"
@@ -35,7 +35,7 @@ class QdrantRetriever:
         if client is None and not api_key:
             raise RuntimeError("QDRANT_API_KEY is missing from the environment or .env")
 
-        self.model = model if model is not None else load_bge_model()
+        self.model = model if model is not None else get_embedding_backend()
         self.collection_name = collection_name or COLLECTION_NAME
         if client is None:
             from qdrant_client import QdrantClient
@@ -63,18 +63,13 @@ class QdrantRetriever:
 
         started = time.perf_counter()
         embedding_started = time.perf_counter()
-        query_vector = self.model.encode(
-            query.strip(),
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
+        query_vector = self.model.encode(query.strip())[0]
         embedding_seconds = time.perf_counter() - embedding_started
 
         qdrant_started = time.perf_counter()
         response = self.client.query_points(
             collection_name=self.collection_name,
-            query=query_vector.tolist(),
+            query=query_vector,
             limit=top_k,
             with_payload=True,
         )

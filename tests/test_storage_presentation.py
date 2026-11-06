@@ -6,6 +6,8 @@ from storage.presentation import (
     format_chart_reply,
     format_history,
     format_section_previews,
+    split_message,
+    to_telegram_html,
 )
 from storage.store import RequestRecord
 
@@ -107,6 +109,15 @@ def test_reply_fits_the_message_budget():
     assert text.endswith("…")
 
 
+def test_reply_without_technical_details_is_a_clean_chart_card():
+    text = format_chart_reply(build_result(), technical=False)
+
+    assert "ASC:" in text
+    assert "Кэш:" not in text
+    assert "Разделы базы знаний:" not in text
+    assert "Найденные разделы:" not in text
+
+
 def test_reply_without_chunks_reports_zero():
     text = format_chart_reply(build_result(chunks=[]))
 
@@ -167,6 +178,103 @@ def test_section_previews_skip_empty_content():
 
 def test_history_is_empty_without_requests():
     assert "История запросов пуста" in format_history([])
+
+
+def test_split_message_keeps_short_text_intact():
+    assert split_message("Короткий ответ") == ["Короткий ответ"]
+    assert split_message("   ") == []
+
+
+def test_split_message_respects_limit_and_paragraphs():
+    paragraphs = ["Абзац номер {}. ".format(index) * 40 for index in range(5)]
+    text = "\n\n".join(paragraphs)
+
+    parts = split_message(text, limit=1000)
+
+    assert len(parts) > 1
+    assert all(len(part) <= 1000 for part in parts)
+    # Only whitespace may be dropped at the split points.
+    assert " ".join(parts).split() == text.split()
+
+
+def test_split_message_hard_splits_a_long_token():
+    parts = split_message("я" * 2500, limit=1000)
+
+    assert [len(part) for part in parts] == [1000, 1000, 500]
+
+
+def test_split_message_rejects_tiny_limit():
+    import pytest
+
+    with pytest.raises(ValueError):
+        split_message("текст", limit=100)
+
+
+def test_to_telegram_html_converts_bold_and_headings():
+    text = "### 1. Введение\n\n**Солнце во Льве** — сила.\n\n<опасно> & 🚀"
+
+    result = to_telegram_html(text)
+
+    assert "<b>1. Введение</b>" in result
+    assert "<b>Солнце во Льве</b>" in result
+    assert "**" not in result
+    assert "&lt;опасно&gt; &amp; 🚀" in result
+
+
+def test_to_telegram_html_replaces_markdown_bullets():
+    text = (
+        "Карта насыщена аспектами:\n"
+        "* Соединение Венеры и Марса: чувственность.\n"
+        "  * Вложенный пункт\n"
+        "- Второй пункт\n"
+        "+ Третий пункт"
+    )
+
+    result = to_telegram_html(text)
+
+    assert "* Соединение" not in result
+    assert "• Соединение Венеры и Марса" in result
+    assert "  • Вложенный пункт" in result
+    assert "• Второй пункт" in result
+    assert "• Третий пункт" in result
+
+
+def test_to_telegram_html_keeps_plain_text_and_single_asterisks():
+    assert to_telegram_html("2 * 3 = 6") == "2 * 3 = 6"
+    assert to_telegram_html("") == ""
+
+
+def test_split_message_moves_trailing_heading_to_next_part():
+    intro = "А" * 200
+    heading = "💼 **2. Социальная реализация и вектор судьбы**"
+    body = "Б" * 200
+
+    parts = split_message(f"{intro}\n\n{heading}\n\n{body}", limit=260)
+
+    assert parts[0] == intro
+    assert parts[1].startswith(heading)
+    assert "**" not in parts[0]
+
+
+def test_split_message_never_starts_with_a_lone_heading():
+    text = "**1. Раздел**\n\n" + "текст " * 200
+
+    parts = split_message(text, limit=300)
+
+    assert parts[0].startswith("**1. Раздел**")
+    assert len(parts[0]) > len("**1. Раздел**") + 50
+
+
+def test_split_message_keeps_heading_when_four_lines_follow():
+    intro = "А" * 50
+    heading = "**2. Раздел**"
+    body = "\n".join(["Строка текста номер " + "а" * 45 for _ in range(4)])
+    tail = "В" * 200
+
+    parts = split_message(f"{intro}\n\n{heading}\n\n{body}\n\n{tail}", limit=340)
+
+    assert heading in parts[0]
+    assert body in parts[0]
 
 
 def test_history_lists_records():

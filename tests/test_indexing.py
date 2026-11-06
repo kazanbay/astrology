@@ -146,7 +146,9 @@ def test_upload_chunks_uses_hundred_point_batches():
     assert result.total == 250
     assert [size for _collection, size, _points in client.batches] == [100, 100, 50]
     assert all(call["batch_size"] == 8 for call in model.calls)
-    assert all(call["normalize_embeddings"] is True for call in model.calls)
+    # Normalization is the backend's concern now (Qdrant COSINE also normalizes);
+    # the indexing layer must not send sentence-transformers-only kwargs.
+    assert all(set(call) == {"texts", "batch_size"} for call in model.calls)
     first_point = client.batches[0][2][0]
     assert first_point.payload["content"] == "Текст фрагмента номер 0"
 

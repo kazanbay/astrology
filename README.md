@@ -12,6 +12,7 @@ src/indexing/          Создание коллекций Qdrant и батче�
 src/astronomy/         Эфемериды, дома, знаки и аспекты натальной карты
 src/storage/           Кэш карт, пользователи и история запросов (PostgreSQL)
 src/rag/               Эмбеддинги, поиск в Qdrant и генерация ответов
+src/generator/         Промпты, LLM-синтез разбора карты и кэш генераций
 src/bot.py             Telegram-бот для вопросов к базе знаний
 scripts/               ETL, сравнение ретриверов и ручные проверки
 ```
@@ -37,15 +38,28 @@ uv sync
 ```dotenv
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
 QDRANT_URL=https://your-cluster.cloud.qdrant.io:6333
-QDRANT_API_KEY=your-api-key
-OPENROUTER_API_KEY=your-openrouter-key
-TELEGRAM_BOT_TOKEN=your-telegram-token
+QDRANT_API_KEY=your-qdrant-api-key
+OPENROUTER_API_KEY=sk-or-...
+TELEGRAM_BOT_TOKEN=123456:telegram-token
+
+# Эмбеддинги: OpenAI-совместимый /embeddings, модель BAAI/bge-m3 (1024)
+EMBEDDING_BACKEND=api
 EMBEDDING_MODEL=BAAI/bge-m3
-EMBEDDING_DEVICE=auto
-EMBEDDING_BATCH_SIZE=16
+EMBEDDING_BASE_URL=https://openrouter.ai/api/v1
+EMBEDDING_API_KEY=
+EMBEDDING_BATCH_SIZE=32
+
+# LLM: чат-модель для разбора карты
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+LLM_API_KEY=
+LLM_MODEL=gemini-flash-lite-latest
+LLM_TEMPERATURE=0.7
+LLM_TIMEOUT=180
 ```
 
-`EMBEDDING_MODEL` используется и для токенизации чанков, и для эмбеддингов. `EMBEDDING_DEVICE` принимает `auto`, `cpu` или `cuda`; по умолчанию выбирается CUDA, если PyTorch её видит. Не добавляйте `.env` с секретами в Git.
+`EMBEDDING_MODEL` используется и для токенизации чанков, и для эмбеддингов. OpenRouter отдаёт `BAAI/bge-m3` через `/embeddings` (1024 измерения, векторы нормированы), поэтому `EMBEDDING_API_KEY` можно не задавать: ключ `OPENROUTER_API_KEY` подставляется автоматически, но только для эндпоинта `openrouter.ai` — чужому провайдеру он не уйдёт. Для другого OpenAI-совместимого провайдера задайте `EMBEDDING_BASE_URL` и `EMBEDDING_API_KEY` явно.
+
+`LLM_API_KEY` тоже падает обратно в `OPENROUTER_API_KEY`. Локальная модель `sentence-transformers` больше не входит в обязательный рантайм: она доступна через extra `local-embeddings` (`uv sync --extra local-embeddings`), нужный для ETL и офлайн-индексации. Для контейнера достаточно `uv sync --no-dev`.
 
 ## PostgreSQL
 
@@ -55,7 +69,7 @@ EMBEDDING_BATCH_SIZE=16
 uv run python init_db.py
 ```
 
-Скрипт создаёт `schools`, `authors`, `books`, `book_authors`, `chunks`, `users`, `charts_cache`, `user_chart_requests` и индексы для `chunks.meta_tags`, `chunks.book_id` и ключей кэша карт. Он не загружает содержимое книг.
+Скрипт создаёт `schools`, `authors`, `books`, `book_authors`, `chunks`, `users`, `charts_cache`, `llm_generations`, `user_chart_requests` и индексы для `chunks.meta_tags`, `chunks.book_id` и ключей кэша карт. Он не загружает содержимое книг.
 
 Сначала запустите `uv run python init_db.py`, затем `uv run python parse_and_ingest.py`.
 
@@ -109,7 +123,7 @@ uv run scripts/index_qdrant.py
 uv run scripts/query_rag.py "Что говорится о планетах?"
 ```
 
-Индексатор берёт `clean_text` из `chunks`, считает эмбеддинги BGE-M3 и добавляет отсутствующие UUID в `astrology_chunks`. Для полной пересборки коллекции используется `uv run scripts/index_qdrant.py --recreate`. Это отдельная legacy-коллекция; четыре `vronsky_*` коллекции создаются мультистратегическим ETL и не мешают ей.
+Индексатор берёт `clean_text` из `chunks`, считает эмбеддинги BGE-M3 через API и добавляет отсутствующие UUID в `astrology_chunks`. Для полной пересборки коллекции используется `uv run scripts/index_qdrant.py --recreate`. Это отдельная legacy-коллекция; четыре `vronsky_*` коллекции создаются мультистратегическим ETL и не мешают ей.
 
 Для запуска Telegram-бота:
 
@@ -117,7 +131,7 @@ uv run scripts/query_rag.py "Что говорится о планетах?"
 uv run src/bot.py
 ```
 
-Текущая модель эмбеддингов — `BAAI/bge-m3` (1024 измерения). Qdrant использует отдельную коллекцию `astrology_chunks`, чтобы не смешивать её с индексами исходного проекта.
+Текущая модель эмбеддингов — `BAAI/bge-m3` (1024 измерения), вызовы идут через OpenAI-совместимый `/embeddings`. Qdrant использует отдельную коллекцию `astrology_chunks`, чтобы не смешивать её с индексами исходного проекта.
 
 ## Астрономический калькулятор
 
@@ -202,19 +216,67 @@ uv run python scripts/chart_request.py "1990-08-15T12:00:00" "Москва"
 В боте:
 
 ```text
-/chart 1990-08-15 12:00 Москва
-/history
+/start          приветствие и меню
+🔮 Рассчитать карту   пошаговый ввод: имя → дата → время → место
+🕘 История            прошлые запросы
+❓ Помощь              что умеет бот
+/chart 1990-08-15 12:00 Москва   быстрый расчёт одной командой
 ```
 
-`/chart` определяет координаты через Nominatim, таймзону через `timezonefinder`, переводит локальное время в UTC по историческим правилам и отдаёт карту со списком найденных разделов и превью лучших из них. `/history` показывает последние запросы пользователя.
+`/start` показывает приветствие и постоянное меню. Кнопка «Рассчитать карту» запускает мастер: имя (можно пропустить — оно нужно только для обращения), дата, время и город рождения. Время можно не указывать — тогда берётся 12:00 с предупреждением, что дома и ASC приблизительны. Перед расчётом бот показывает контрольную сводку с кнопками «Рассчитать» и «Изменить данные».
 
-Тесты: `uv run pytest tests/test_storage_*.py` — юнит-слой без сети; `tests/test_storage_integration.py` проверяет PostgreSQL и включается только при заданном `DATABASE_URL`, удаляя созданные им строки.
+`/chart` с аргументами остаётся для быстрого расчёта: он определяет координаты через Nominatim, таймзону через `timezonefinder`, переводит локальное время в UTC по историческим правилам, отдаёт краткую карту и генерирует разбор через LLM (с проверкой кэша `llm_generations`). `/history` показывает последние запросы пользователя.
+
+Тесты: `uv run pytest` — весь набор, сеть не требуется; `tests/test_storage_integration.py` проверяет PostgreSQL и включается только при заданном `DATABASE_URL`, удаляя созданные им строки.
 
 Ограничения MVP:
 
 * `user_chart_requests.chart_hash` объявлен с `ON DELETE CASCADE` (как в ТЗ): удаление строки кэша удалит и историю. Если история должна переживать очистку кэша, ограничение нужно заменить на `RESTRICT`;
+* `llm_generations.chart_hash` тоже `ON DELETE CASCADE`: удаление строки кэша удалит и её разборы;
 * TTL и вытеснения нет: `charts_cache` растёт вместе с числом уникальных карт (проверка на этой карте: около 100 КБ JSON и 37 КБ на диске после сжатия TOAST);
 * смена состава полей `chart_hash` меняет все ключи, после неё кэш нужно перезаполнить.
+
+## LLM-разбор натальной карты
+
+`src/generator/` превращает расчёт и найденные чанки в связный разбор:
+
+| Файл | Роль |
+|---|---|
+| `prompts.py` | версионируемый системный промпт (`PROMPT_VERSION = "v1.1"`) с правилами антигаллюцинации, структурой разбора и форматированием под Telegram |
+| `synthesizer.py` | один вызов чат-модели через OpenAI-совместимый API; контекст ограничен (`max_chunk_chars`, `max_total_chars`), чтобы 35 разделов не вылетели за окно модели |
+| `report.py` | `generate_generation_id` и `ChartReportService` — cache-aside поверх `llm_generations` |
+
+`generation_id` — SHA-256 от `chart_hash`, версии промпта, имени модели и температуры (округлённой до 2 знаков). Одинаковый запрос не платит за токены дважды; смена промпта или модели даёт новый id и не ломает старые разборы. Каждая строка `user_chart_requests` хранит `generation_id`, поэтому историю можно воспроизвести.
+
+По умолчанию используется `gemini-flash-lite-latest` через OpenAI-совместимый эндпоинт Google (`generativelanguage.googleapis.com/v1beta/openai/`); модель, температура и таймаут задаются в `.env` (`LLM_*`). `gemini-2.5-flash` новым ключам уже недоступен, а `gemini-3.8-flash` периодически отвечает 503 — lite-вариант стабильно работает и попадает в бесплатный лимит. Через `LLM_BASE_URL` можно вернуться на OpenRouter. Промпт лежит в коде, а не в переменных окружения: так он версионируется вместе с кэшем.
+
+В боте `/chart` сначала отправляет краткую сводку карты, затем генерирует разбор с проверкой кэша и режет его на сообщения по 4096 символов. Модель просят оформлять текст под Telegram (`**жирный**`, эмодзи, без `###`), а бот превращает `**…**` и заголовки в HTML-теги `<b>` и отправляет с `parse_mode=HTML`; если Telegram не принял разметку, тот же текст уходит без неё. Если LLM недоступна, бот честно сообщает об этом и показывает превью найденных разделов.
+
+Проверка на живой карте: flash-lite — около 18 секунд и 4,8 тыс. символов; pro-модель — около минуты и 9–10 тыс. символов; повторный запрос — 0,45 с без обращения к модели.
+
+Ограничение: 35 разделов по ~1,2 КБ — это ~10 тысяч токенов входа; для моделей с маленьким окном контекст придётся урезать (`max_total_chars`).
+
+## Docker и VPS
+
+Образ содержит только рантайм бота: эмбеддинги и LLM вызываются по API, PyTorch в него не ставится (`uv sync --frozen --no-dev --no-install-project`).
+
+Образ рассчитан на x86_64: `pysweph` публикует manylinux-колесо только под эту архитектуру.
+
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f bot
+```
+
+На VPS:
+
+1. Скопируйте проект (без `.venv`, `books/`, `data/`).
+2. Создайте `.env` из `.env.example` и заполните ключи; в образ он не попадает (`.dockerignore`).
+3. Примените схему БД: `docker compose run --rm bot python init_db.py`.
+4. Запустите бота: `docker compose up -d --build`.
+5. Обновление: `git pull && docker compose up -d --build`.
+
+PostgreSQL и Qdrant остаются внешними (Neon и Qdrant Cloud), поэтому рядом с ботом ничего поднимать не нужно. Состояние мастера хранится в памяти процесса: при рестарте контейнера незавершённый ввод сбрасывается.
 
 ## Разработка
 

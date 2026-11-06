@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from storage.config import resolve_database_url
-from storage.store import CachedChart, PostgresChartStore
+from storage.store import CachedChart, GenerationRecord, PostgresChartStore
 
 try:
     DSN: str | None = resolve_database_url()
@@ -31,9 +31,17 @@ async def _scenario() -> None:
     user_id: int | None = None
     store = await PostgresChartStore.connect(max_size=2)
     try:
-        user_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест")
+        user_id = await store.upsert_user(
+            telegram_id=TEST_TELEGRAM_ID, first_name="Тест", display_name="Интеграция"
+        )
         assert await store.find_user(telegram_id=TEST_TELEGRAM_ID) == user_id
         assert await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест") == user_id
+        assert (
+            await store.pool.fetchval(
+                "SELECT display_name FROM users WHERE user_id = $1", user_id
+            )
+            == "Интеграция"
+        )
 
         cached = CachedChart(
             chart_hash=chart_hash,
@@ -53,10 +61,28 @@ async def _scenario() -> None:
         request_id = await store.record_request(
             user_id=user_id, chart_hash=chart_hash, profile_name=TEST_PROFILE
         )
+
+        generation_id = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+        generation = GenerationRecord(
+            generation_id=generation_id,
+            chart_hash=chart_hash,
+            prompt_version="v1.0",
+            model_name="test-model",
+            temperature=0.7,
+            generated_text="Текст разбора",
+        )
+        assert await store.save_generation(generation) is True
+        assert await store.save_generation(generation) is False
+        assert await store.get_generation(generation_id) == "Текст разбора"
+        assert await store.get_generation("0" * 64) is None
+
+        await store.attach_generation(request_id, generation_id)
+
         history = await store.list_requests(user_id, limit=5)
         assert history[0].request_id == request_id
         assert history[0].profile_name == TEST_PROFILE
         assert history[0].input_params["city"] == "Москва"
+        assert history[0].generation_id == generation_id
 
         assert await store.get_chart("0" * 64) is None
     finally:

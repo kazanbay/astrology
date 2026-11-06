@@ -238,15 +238,12 @@ def main(argv: list[str] | None = None) -> int:
     if not queries:
         parser.error(f"No queries supplied and {args.queries_file} is empty or missing")
 
-    from src.rag.embedding import MODEL_NAME, load_bge_model
+    from src.rag.embedding import get_embedding_backend
 
-    model = load_bge_model()
+    model = get_embedding_backend()
     vectors = model.encode(
         queries,
         batch_size=min(16, len(queries)),
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
     )
     client = _client()
     try:
@@ -275,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                     ids_by_strategy[strategy] = set()
                     continue
                 try:
-                    hits, latency_ms = _search(client, info["name"], vector.tolist(), args.top_k)
+                    hits, latency_ms = _search(client, info["name"], vector, args.top_k)
                     row["results"][strategy] = {
                         "hits": [hit.as_dict() for hit in hits],
                         "latency_ms": round(latency_ms, 1),
@@ -311,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "embedding_model": MODEL_NAME,
+        "embedding_model": model.model_name,
         "top_k": args.top_k,
         "selected": args.collections,
         "queries": queries,

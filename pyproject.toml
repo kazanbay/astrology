@@ -8,15 +8,21 @@ dependencies = [
     "openai>=3.21.0",
     "psycopg2-binary>=2.9.9",
     "python-dotenv>=1.2.3",
-    "qdrant-client[fastembed]>=1.19.1",
+    "qdrant-client>=1.19.1",
     "requests>=2.32",
     "timezonefinder>=6.5",
     "tzdata>=2024.1",
+    # pyswisseph has no wheels for Python 3.12+; pysweph exposes the same swisseph API.
+    "pysweph>=2.10.3.6",
+]
+
+[project.optional-dependencies]
+# Local inference and FB2 tokenization for offline re-indexing. The bot runtime
+# uses cloud embeddings and does not install PyTorch.
+local-embeddings = [
     "sentence-transformers>=5.1.2,<6",
     "transformers>=4.41,<5",
     "torch==2.6.0",
-    # pyswisseph has no wheels for Python 3.12+; pysweph exposes the same swisseph API.
-    "pysweph>=2.10.3.6",
 ]
 
 [tool.pytest.ini_options]

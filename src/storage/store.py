@@ -11,7 +11,9 @@ Schema (created by ``init_db.py``):
 * ``charts_cache`` - one row per unique birth input, shared by every user with
   the same chart (twins included);
 * ``user_chart_requests`` - append-only history of "who asked for which chart
-  under which profile name".
+  under which profile name" plus the report it received;
+* ``llm_generations`` - cached report per (chart, prompt version, model,
+  temperature).
 """
 
 from __future__ import annotations
@@ -31,8 +33,8 @@ EMAIL_LIMIT = 255
 
 UPSERT_USER_SQL = """
 WITH inserted AS (
-    INSERT INTO users (telegram_id, email, first_name, last_name)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO users (telegram_id, email, first_name, last_name, display_name)
+    VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT DO NOTHING
     RETURNING user_id
 ),
@@ -46,6 +48,10 @@ candidates AS (
         OR ($2::text IS NOT NULL AND email = $2::text)
 )
 SELECT user_id FROM candidates ORDER BY priority LIMIT 1
+"""
+
+SET_DISPLAY_NAME_SQL = """
+UPDATE users SET display_name = $2 WHERE user_id = $1
 """
 
 SELECT_USER_SQL = """
@@ -77,12 +83,32 @@ RETURNING request_id
 """
 
 SELECT_REQUESTS_SQL = """
-SELECT r.request_id, r.chart_hash, r.profile_name, r.requested_at, c.input_params
+SELECT r.request_id, r.chart_hash, r.profile_name, r.requested_at, r.generation_id, c.input_params
   FROM user_chart_requests AS r
   JOIN charts_cache AS c ON c.chart_hash = r.chart_hash
  WHERE r.user_id = $1
  ORDER BY r.requested_at DESC, r.request_id DESC
  LIMIT $2
+"""
+
+SELECT_GENERATION_SQL = """
+SELECT generated_text
+  FROM llm_generations
+ WHERE generation_id = $1
+"""
+
+INSERT_GENERATION_SQL = """
+INSERT INTO llm_generations
+       (generation_id, chart_hash, prompt_version, model_name, temperature, generated_text)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (generation_id) DO NOTHING
+RETURNING generation_id
+"""
+
+ATTACH_GENERATION_SQL = """
+UPDATE user_chart_requests
+   SET generation_id = $2
+ WHERE request_id = $1
 """
 
 
@@ -106,6 +132,21 @@ class RequestRecord:
     profile_name: str
     requested_at: datetime
     input_params: dict[str, Any] = field(default_factory=dict)
+    #: Report attached to this request; ``None`` when generation was skipped.
+    generation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GenerationRecord:
+    """One ``llm_generations`` row: a cached report and its identity."""
+
+    generation_id: str
+    chart_hash: str
+    prompt_version: str
+    model_name: str
+    temperature: float
+    generated_text: str
+    created_at: datetime | None = None
 
 
 @runtime_checkable
@@ -119,6 +160,7 @@ class ChartStore(Protocol):
         email: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
+        display_name: str | None = None,
     ) -> int: ...
 
     async def find_user(
@@ -134,6 +176,12 @@ class ChartStore(Protocol):
     ) -> int: ...
 
     async def list_requests(self, user_id: int, *, limit: int = 10) -> list[RequestRecord]: ...
+
+    async def get_generation(self, generation_id: str) -> str | None: ...
+
+    async def save_generation(self, record: GenerationRecord) -> bool: ...
+
+    async def attach_generation(self, request_id: int, generation_id: str) -> None: ...
 
 
 async def _configure_connection(connection: asyncpg.Connection) -> None:
@@ -200,6 +248,14 @@ def _optional_name(value: str | None) -> str | None:
     return name[:USER_NAME_LIMIT] or None
 
 
+def _display_name(value: str | None) -> str | None:
+    """Name the user chose for themselves; used for address and mailings."""
+    if value is None:
+        return None
+    name = str(value).strip()
+    return name[:USER_NAME_LIMIT] or None
+
+
 class PostgresChartStore:
     """asyncpg-backed ``ChartStore``."""
 
@@ -237,21 +293,26 @@ class PostgresChartStore:
         email: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
+        display_name: str | None = None,
     ) -> int:
         """Return the internal ``user_id``, creating the account on first contact."""
         telegram = _telegram_id(telegram_id)
         address = _email(email)
         if telegram is None and address is None:
             raise ValueError("a user needs at least one of telegram_id or email")
+        display = _display_name(display_name)
         user_id = await self.pool.fetchval(
             UPSERT_USER_SQL,
             telegram,
             address,
             _optional_name(first_name),
             _optional_name(last_name),
+            display,
         )
         if user_id is None:  # pragma: no cover - would mean a lost row
             raise RuntimeError("could not resolve user_id after upsert")
+        if display:
+            await self.pool.execute(SET_DISPLAY_NAME_SQL, int(user_id), display)
         return int(user_id)
 
     async def find_user(
@@ -321,8 +382,41 @@ class PostgresChartStore:
                 profile_name=str(row["profile_name"] or ""),
                 requested_at=row["requested_at"],
                 input_params=_as_json(row["input_params"], {}),
+                generation_id=row["generation_id"],
             )
             for row in rows
         ]
+
+    async def get_generation(self, generation_id: str) -> str | None:
+        """Return the cached report text, or ``None`` on a miss."""
+        if not isinstance(generation_id, str) or len(generation_id) != 64:
+            raise ValueError("generation_id must be a 64-character SHA-256 hex string")
+        text = await self.pool.fetchval(SELECT_GENERATION_SQL, generation_id)
+        return str(text) if text is not None else None
+
+    async def save_generation(self, record: GenerationRecord) -> bool:
+        """Insert a report; ``False`` means another request stored it first."""
+        if not isinstance(record, GenerationRecord):
+            raise ValueError("save_generation expects a GenerationRecord")
+        if len(record.generation_id) != 64:
+            raise ValueError("generation_id must be a 64-character SHA-256 hex string")
+        stored = await self.pool.fetchval(
+            INSERT_GENERATION_SQL,
+            record.generation_id,
+            record.chart_hash,
+            record.prompt_version,
+            record.model_name,
+            record.temperature,
+            record.generated_text,
+        )
+        return stored is not None
+
+    async def attach_generation(self, request_id: int, generation_id: str) -> None:
+        """Link a history entry to the report it received."""
+        if len(generation_id) != 64:
+            raise ValueError("generation_id must be a 64-character SHA-256 hex string")
+        status = await self.pool.execute(ATTACH_GENERATION_SQL, int(request_id), generation_id)
+        if status.endswith(" 0"):
+            raise ValueError(f"request_id {request_id} does not exist")
 
 

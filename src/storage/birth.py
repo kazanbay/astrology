@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -144,6 +144,44 @@ class BirthData:
             if value:
                 params[key] = value
         return params
+
+
+_DATE_FORMATS = ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d")
+_TIME_PATTERN = re.compile(r"(\d{1,2})(?:[:.](\d{1,2}))?")
+
+
+def parse_birth_date(value: str) -> date:
+    """Parse a birth date typed by a user (``15.08.1990`` and similar)."""
+    text = str(value).strip()
+    parsed: date | None = None
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt).date()
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        raise BirthInputError(
+            f"Не удалось разобрать дату {value!r}; ожидается 15.08.1990"
+        )
+    if parsed > date.today():
+        raise BirthInputError("Дата рождения не может быть в будущем")
+    if parsed.year < 1900:
+        raise BirthInputError("Поддерживаются даты рождения с 1900 года")
+    return parsed
+
+
+def parse_birth_time(value: str) -> time:
+    """Parse a local birth time (``12:30``, ``12.30`` or ``12``)."""
+    text = str(value).strip()
+    match = _TIME_PATTERN.fullmatch(text)
+    if not match:
+        raise BirthInputError(f"Не удалось разобрать время {value!r}; ожидается 12:30")
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise BirthInputError(f"Время вне диапазона: {value!r}")
+    return time(hour, minute)
 
 
 def parse_local_datetime(value: str) -> datetime:

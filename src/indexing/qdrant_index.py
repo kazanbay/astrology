@@ -265,9 +265,6 @@ def upload_chunks(
         vectors = model.encode(
             texts,
             batch_size=embed_batch_size,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
         )
         rows = _vectors_to_lists(vectors, len(batch), vector_size)
         points = [

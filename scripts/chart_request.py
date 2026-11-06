@@ -26,6 +26,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from astronomy.calculator import AstronomyError  # noqa: E402
+from generator.report import ChartReportService  # noqa: E402
+from generator.synthesizer import SynthesisError  # noqa: E402
 from rag.structural_router import DEFAULT_COLLECTION  # noqa: E402
 from storage.birth import (  # noqa: E402
     BirthData,
@@ -119,6 +121,7 @@ async def run(args: argparse.Namespace) -> int:
         collection_name=args.collection,
         per_element=args.top,
     )
+    report_result = None
     try:
         result = await pipeline.load(
             birth,
@@ -180,6 +183,27 @@ async def run(args: argparse.Namespace) -> int:
                 f"  [{index}] {record.requested_at:%d.%m.%Y %H:%M} · {record.profile_name} · "
                 f"{place} · {moment} · {record.chart_hash[:8]}"
             )
+
+        if args.report:
+            print("\n=== 9. LLM-разбор (кэш llm_generations) ===")
+            report_service = ChartReportService(store)
+            started_report = time.perf_counter()
+            try:
+                report_result = await report_service.get_or_generate(result)
+            except SynthesisError as exc:
+                print(f"  ОШИБКА генерации: {exc}")
+            else:
+                print(
+                    f"  модель: {report_result.model_name}; промпт: {report_result.prompt_version}; "
+                    f"temperature={report_result.temperature}"
+                )
+                print(f"  generation_id: {report_result.generation_id}")
+                print(
+                    f"  кэш: {'ПОПАДАНИЕ' if report_result.cache_hit else 'ПРОМАХ'}; "
+                    f"{time.perf_counter() - started_report:.1f} с; "
+                    f"{len(report_result.text)} символов"
+                )
+                print("\n" + report_result.text)
     finally:
         await store.close()
 
@@ -207,6 +231,16 @@ async def run(args: argparse.Namespace) -> int:
                 "aspects": len(result.chart.get("aspects") or []),
             },
             "chunks": result.chunks,
+            "report": None
+            if report_result is None
+            else {
+                "generation_id": report_result.generation_id,
+                "model_name": report_result.model_name,
+                "prompt_version": report_result.prompt_version,
+                "temperature": report_result.temperature,
+                "cache_hit": report_result.cache_hit,
+                "chars": len(report_result.text),
+            },
             "history": [
                 {
                     "request_id": record.request_id,
@@ -250,6 +284,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lon", type=float, help="долгота (пропускает геокодинг)")
     parser.add_argument("--timezone", help="IANA-таймзона (пропускает timezonefinder)")
     parser.add_argument("--json-out", type=Path, help="сохранить полный отчёт в JSON")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="сгенерировать LLM-разбор карты (с проверкой кэша llm_generations)",
+    )
     return parser
 
 
