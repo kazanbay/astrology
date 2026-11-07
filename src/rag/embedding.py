@@ -8,11 +8,11 @@ switches models.
 
 Two backends exist:
 
-* ``api`` - any OpenAI-compatible ``/embeddings`` endpoint, configured through
+- ``api`` - any OpenAI-compatible ``/embeddings`` endpoint, configured through
   ``EMBEDDING_BASE_URL`` / ``EMBEDDING_API_KEY`` / ``EMBEDDING_MODEL``. The
   client is created lazily, so importing the package and starting the bot does
   not require the key to be present.
-* ``local`` - the previous in-process SentenceTransformer path. It needs the
+- ``local`` - the previous in-process SentenceTransformer path. It needs the
   ``local-embeddings`` extra (PyTorch and sentence-transformers are no longer
   part of the core runtime) and exists for offline re-indexing.
 """
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
+from langfuse import observe
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -130,6 +131,7 @@ class ApiEmbeddingBackend:
         )
         return self._client
 
+    @observe(name="api_embedding_encode")
     def encode(
         self,
         texts: str | Sequence[str],
@@ -230,6 +232,7 @@ class LocalEmbeddingBackend:
         self._model = SentenceTransformer(self.model_name, device=device, model_kwargs=model_kwargs)
         return self._model
 
+    @observe(name="local_embedding_encode")
     def encode(
         self,
         texts: str | Sequence[str],
