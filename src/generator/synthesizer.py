@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from langfuse import langfuse_context, observe
+from langfuse import observe
 
 from .prompts import ASTROLOGER_SYSTEM_PROMPT, build_user_prompt
 
@@ -161,17 +161,6 @@ async def synthesize_chart_report(
     model = str(model_name).strip()
     value = normalize_temperature(temperature)
 
-    langfuse_context.update_current_observation(
-        input={
-            "chunks_count": len(chunks),
-            "chart_keys_count": len(chart_data),
-        },
-        metadata={
-            "model_name": model,
-            "temperature": value,
-        },
-    )
-
     content = build_user_content(
         chart_data,
         chunks,
@@ -198,9 +187,5 @@ async def synthesize_chart_report(
     text = _message_text(choices[0].message)
     if not text:
         raise SynthesisError(f"LLM returned an empty report for {model}")
-
-    langfuse_context.update_current_observation(
-        output={"report_length": len(text)}
-    )
 
     return text
