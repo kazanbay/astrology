@@ -20,10 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from langfuse.decorators import (
-    langfuse_context,
-    observe,
-)
+from langfuse import langfuse_context, observe
 
 from .prompts import ASTROLOGER_SYSTEM_PROMPT, build_user_prompt
 
