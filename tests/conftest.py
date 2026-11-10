@@ -2,7 +2,17 @@ import re
 
 import pytest
 
+import llm_prompts
 from chunking.document import BookDocument, Section
+
+
+@pytest.fixture(autouse=True)
+def _local_prompts_only(monkeypatch):
+    """Tests never fetch prompts from Langfuse: the hub stays offline."""
+    monkeypatch.setenv("LANGFUSE_PROMPTS_ENABLED", "false")
+    llm_prompts.reset_cache()
+    yield
+    llm_prompts.reset_cache()
 
 
 class WordTokenizer:

@@ -1,4 +1,9 @@
-"""Grounded answer generation through the OpenRouter chat completions API."""
+"""Grounded answer generation through the OpenRouter chat completions API.
+
+The system prompt is fetched from Langfuse (``astrology_qa``) when available
+and falls back to the local :data:`SYSTEM_PROMPT` constant otherwise; see
+:mod:`llm_prompts` for the resolution rules.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+
+try:
+    from ..llm_prompts import QA_PROMPT_NAME, resolve
+except ImportError:  # pragma: no cover - depends on sys.path layout
+    from llm_prompts import QA_PROMPT_NAME, resolve
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -60,6 +70,8 @@ class RAGGenerator:
                 timeout=90,
             )
         self.client = client
+        # Resolve once per instance: Langfuse text or the local constant below.
+        self.system_prompt = resolve(QA_PROMPT_NAME).text or SYSTEM_PROMPT
 
     @staticmethod
     def format_context(retrieved_chunks: list[dict[str, Any]]) -> str:
@@ -95,7 +107,7 @@ class RAGGenerator:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.system_prompt},
                 {
                     "role": "user",
                     "content": f"Вопрос пользователя:\n{query.strip()}\n\nКонтекст базы знаний:\n{context}",

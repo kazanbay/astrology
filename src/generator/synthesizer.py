@@ -22,7 +22,17 @@ from typing import Any
 from dotenv import load_dotenv
 from langfuse import observe
 
-from .prompts import ASTROLOGER_SYSTEM_PROMPT, build_user_prompt
+try:
+    from ..llm_prompts import INTERPRETATION_PROMPT_NAME, resolve_chat
+except ImportError:  # pragma: no cover - depends on sys.path layout
+    from llm_prompts import INTERPRETATION_PROMPT_NAME, resolve_chat
+
+from .prompts import (
+    ASTROLOGER_SYSTEM_PROMPT,
+    INTERPRETATION_PROMPT_VARIABLES,
+    PROMPT_VERSION,
+    build_user_prompt,
+)
 
 # Load before reading the defaults below: the bot imports this module early.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -69,14 +79,14 @@ def _chunk_block(index: int, chunk: Mapping[str, Any], *, max_chars: int) -> str
     return f"{label}\n{text}"
 
 
-def build_user_content(
+def serialize_inputs(
     chart_data: Mapping[str, Any],
     chunks: Sequence[Mapping[str, Any]],
     *,
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
     max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
-) -> str:
-    """Serialize the chart and the chunks into one bounded user message."""
+) -> tuple[str, str]:
+    """Serialize the chart and the chunks into two bounded prompt strings."""
     if not isinstance(chart_data, Mapping) or not chart_data:
         raise SynthesisError("chart_data must be a non-empty mapping")
     if max_chunk_chars < 100:
@@ -103,7 +113,53 @@ def build_user_content(
         used += len(block) + 2
 
     chunks_text = "\n\n".join(blocks) if blocks else "(фрагменты не найдены)"
+    return chart_json, chunks_text
+
+
+def build_user_content(
+    chart_data: Mapping[str, Any],
+    chunks: Sequence[Mapping[str, Any]],
+    *,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+    max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
+) -> str:
+    """Serialize the chart and the chunks into one bounded user message."""
+    chart_json, chunks_text = serialize_inputs(
+        chart_data,
+        chunks,
+        max_chunk_chars=max_chunk_chars,
+        max_total_chars=max_total_chars,
+    )
     return build_user_prompt(chart_json=chart_json, chunks=chunks_text)
+
+
+def build_messages(chart_json: str, chunks_text: str) -> list[dict[str, str]]:
+    """Build the chat messages: the Langfuse prompt or the local fallback.
+
+    The Langfuse chat template (``astrology_interpretation``) carries both the
+    system message and the user-message scaffold with ``{{chart_json}}`` /
+    ``{{chunks}}`` placeholders; when it cannot be resolved, the exact local
+    constants from :mod:`generator.prompts` are used instead.
+    """
+    resolution = resolve_chat(
+        INTERPRETATION_PROMPT_NAME,
+        allowed_variables=INTERPRETATION_PROMPT_VARIABLES,
+        local_version=PROMPT_VERSION,
+    )
+    if resolution.source == "langfuse":
+        try:
+            compiled = resolution.compile(chart_json=chart_json, chunks=chunks_text)
+        except Exception as exc:  # noqa: BLE001 - template defects must fail loudly
+            raise SynthesisError(
+                f"Langfuse prompt {resolution.name!r} could not be compiled: {exc}"
+            ) from exc
+        if not compiled:
+            raise SynthesisError(f"Langfuse prompt {resolution.name!r} compiled to no messages")
+        return compiled
+    return [
+        {"role": "system", "content": ASTROLOGER_SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_prompt(chart_json=chart_json, chunks=chunks_text)},
+    ]
 
 
 def _build_client() -> Any:
@@ -161,21 +217,19 @@ async def synthesize_chart_report(
     model = str(model_name).strip()
     value = normalize_temperature(temperature)
 
-    content = build_user_content(
+    content_chunks = serialize_inputs(
         chart_data,
         chunks,
         max_chunk_chars=max_chunk_chars,
         max_total_chars=max_total_chars,
     )
+    messages = build_messages(*content_chunks)
 
     api = client if client is not None else _build_client()
     try:
         response = await api.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": ASTROLOGER_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
+            messages=messages,
             temperature=value,
         )
     except Exception as exc:  # noqa: BLE001 - one error type for every provider failure

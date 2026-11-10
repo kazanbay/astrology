@@ -25,7 +25,12 @@ except ImportError:  # pragma: no cover - depends on sys.path layout
     from storage.pipeline import ChartResult
     from storage.store import GenerationRecord
 
-from .prompts import PROMPT_VERSION
+try:
+    from ..llm_prompts import INTERPRETATION_PROMPT_NAME, resolve_chat
+except ImportError:  # pragma: no cover - depends on sys.path layout
+    from llm_prompts import INTERPRETATION_PROMPT_NAME, resolve_chat
+
+from .prompts import INTERPRETATION_PROMPT_VARIABLES, PROMPT_VERSION
 from .synthesizer import (
     DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
@@ -37,6 +42,23 @@ GENERATION_ID_LENGTH = 64
 
 #: ``(chart, chunks, model_name, temperature) -> report text``
 Synthesizer = Callable[[dict[str, Any], list[dict[str, Any]], str, float], Awaitable[str]]
+
+
+def _default_prompt_version() -> str:
+    """Version of the prompt the synthesizer actually sends to the model.
+
+    Resolution is memoized in ``llm_prompts``: the Langfuse version when the
+    chat prompt resolves, ``PROMPT_VERSION`` otherwise (offline, disabled or
+    invalid template). Publishing a new Langfuse version therefore changes
+    the generation_id and starts a new cache lineage without invalidating
+    the reports cached under the old version.
+    """
+    resolution = resolve_chat(
+        INTERPRETATION_PROMPT_NAME,
+        allowed_variables=INTERPRETATION_PROMPT_VARIABLES,
+        local_version=PROMPT_VERSION,
+    )
+    return resolution.version
 
 
 class GenerationStore(Protocol):
@@ -93,17 +115,18 @@ class ChartReportService:
         *,
         model_name: str = DEFAULT_MODEL,
         temperature: float = DEFAULT_TEMPERATURE,
-        prompt_version: str = PROMPT_VERSION,
+        prompt_version: str | None = None,
         synthesizer: Synthesizer | None = None,
     ) -> None:
         if not model_name or not model_name.strip():
             raise ValueError("model_name must be a non-empty string")
-        if not prompt_version or not prompt_version.strip():
+        version = _default_prompt_version() if prompt_version is None else prompt_version
+        if not version or not version.strip():
             raise ValueError("prompt_version must be a non-empty string")
         self.store = store
         self.model_name = model_name.strip()
         self.temperature = normalize_temperature(temperature)
-        self.prompt_version = prompt_version.strip()
+        self.prompt_version = version.strip()
         self._synthesize: Synthesizer = synthesizer or synthesize_chart_report
 
     def generation_id(self, chart_hash: str) -> str:

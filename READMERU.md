@@ -55,6 +55,12 @@ LLM_API_KEY=
 LLM_MODEL=gemini-flash-lite-latest
 LLM_TEMPERATURE=0.7
 LLM_TIMEOUT=180
+
+# Langfuse: трейсинг и управление промптами
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PROMPT_LABEL=production
 ```
 
 `EMBEDDING_MODEL` используется и для токенизации чанков, и для эмбеддингов. OpenRouter отдаёт `BAAI/bge-m3` через `/embeddings` (1024 измерения, векторы нормированы), поэтому `EMBEDDING_API_KEY` можно не задавать: ключ `OPENROUTER_API_KEY` подставляется автоматически, но только для эндпоинта `openrouter.ai` — чужому провайдеру он не уйдёт. Для другого OpenAI-совместимого провайдера задайте `EMBEDDING_BASE_URL` и `EMBEDDING_API_KEY` явно.
@@ -242,19 +248,45 @@ uv run python scripts/chart_request.py "1990-08-15T12:00:00" "Москва"
 
 | Файл | Роль |
 |---|---|
-| `prompts.py` | версионируемый системный промпт (`PROMPT_VERSION = "v1.1"`) с правилами антигаллюцинации, структурой разбора и форматированием под Telegram |
+| `prompts.py` | версионируемый системный промпт (`PROMPT_VERSION`) с правилами антигаллюцинации, структурой разбора и форматированием под Telegram; одновременно — локальный fallback для Langfuse-промпта |
 | `synthesizer.py` | один вызов чат-модели через OpenAI-совместимый API; контекст ограничен (`max_chunk_chars`, `max_total_chars`), чтобы 35 разделов не вылетели за окно модели |
 | `report.py` | `generate_generation_id` и `ChartReportService` — cache-aside поверх `llm_generations` |
 
 `generation_id` — SHA-256 от `chart_hash`, версии промпта, имени модели и температуры (округлённой до 2 знаков). Одинаковый запрос не платит за токены дважды; смена промпта или модели даёт новый id и не ломает старые разборы. Каждая строка `user_chart_requests` хранит `generation_id`, поэтому историю можно воспроизвести.
 
-По умолчанию используется `gemini-flash-lite-latest` через OpenAI-совместимый эндпоинт Google (`generativelanguage.googleapis.com/v1beta/openai/`); модель, температура и таймаут задаются в `.env` (`LLM_*`). `gemini-2.5-flash` новым ключам уже недоступен, а `gemini-3.8-flash` периодически отвечает 503 — lite-вариант стабильно работает и попадает в бесплатный лимит. Через `LLM_BASE_URL` можно вернуться на OpenRouter. Промпт лежит в коде, а не в переменных окружения: так он версионируется вместе с кэшем.
+По умолчанию используется `gemini-flash-lite-latest` через OpenAI-совместимый эндпоинт Google (`generativelanguage.googleapis.com/v1beta/openai/`); модель, температура и таймаут задаются в `.env` (`LLM_*`). `gemini-2.5-flash` новым ключам уже недоступен, а `gemini-3.8-flash` периодически отвечает 503 — lite-вариант стабильно работает и попадает в бесплатный лимит. Через `LLM_BASE_URL` можно вернуться на OpenRouter. Промпты редактируются в Langfuse (см. раздел «Промпты в Langfuse» ниже), а локальные константы — fallback для офлайн-режима; версия из Langfuse подставляется в `generation_id` наравне с `PROMPT_VERSION`.
 
 В боте `/chart` сначала отправляет краткую сводку карты, затем генерирует разбор с проверкой кэша и режет его на сообщения по 4096 символов. Модель просят оформлять текст под Telegram (`**жирный**`, эмодзи, без `###`), а бот превращает `**…**` и заголовки в HTML-теги `<b>` и отправляет с `parse_mode=HTML`; если Telegram не принял разметку, тот же текст уходит без неё. Если LLM недоступна, бот честно сообщает об этом и показывает превью найденных разделов.
 
 Проверка на живой карте: flash-lite — около 18 секунд и 4,8 тыс. символов; pro-модель — около минуты и 9–10 тыс. символов; повторный запрос — 0,45 с без обращения к модели.
 
 Ограничение: 35 разделов по ~1,2 КБ — это ~10 тысяч токенов входа; для моделей с маленьким окном контекст придётся урезать (`max_total_chars`).
+
+## Промпты в Langfuse
+
+Промпты управляются через Langfuse Prompt Management (версии, метки, откат) и дублируются локальными константами как fallback:
+
+| Промпт в Langfuse | Тип | Слой | Локальный fallback | Переменные шаблона |
+|---|---|---|---|---|
+| `astrology_interpretation` | chat | платный разбор натальной карты | `generator/prompts.py` | `{{chart_json}}`, `{{chunks}}` |
+| `astrology_qa` | text | бесплатный RAG-ответ по книгам | `rag/generator.py::SYSTEM_PROMPT` | — |
+
+Как это работает:
+
+* Код резолвит промпт по метке `LANGFUSE_PROMPT_LABEL` (по умолчанию `production`) один за запуск процесса (`src/llm_prompts.py`) и мемоизирует результат; новая версия подхватывается после рестарта.
+* Если Langfuse недоступен (нет ключей, сеть, промпт не создан) или шаблон нарушает контракт переменных — молча используются локальные константы, бот работает как раньше.
+* Версия из Langfuse (`langfuse:astrology_interpretation:v2`) подставляется в `generation_id`: публикация новой версии промпта начинает новую ветку кэша отчётов, старые разборы остаются валидными.
+* Шаблон чат-промпта обязан использовать ровно `{{chart_json}}` и `{{chunks}}`: лишние или недостающие переменные — это fallback на локальную версию, чтобы ключ кэша всегда соответствовал реально отправленному промпту.
+
+Синхронизация локальных констант с Langfuse:
+
+```bash
+python scripts/langfuse_prompts.py            # check: сравнить локальные промпты с production в Langfuse
+python scripts/langfuse_prompts.py bootstrap  # создать отсутствующие промпты (label: production)
+python scripts/langfuse_prompts.py update     # опубликовать локальный текст новой версией (переносит production!)
+```
+
+Правки делаются в UI Langfuse (новая версия → проверка в Playground → метка `production`); для экспериментов переключите `LANGFUSE_PROMPT_LABEL=staging`. Аварийный выключатель фетча промптов — `LANGFUSE_PROMPTS_ENABLED=false` (трейсинг он не трогает); имена промптов переопределяются через `LANGFUSE_PROMPT_NAME_*`.
 
 ## Docker и VPS
 

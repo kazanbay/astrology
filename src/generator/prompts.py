@@ -4,11 +4,20 @@ The system prompt is the product contract with the model: it defines the
 persona, the anti-hallucination rules and the report structure. Any change here
 must bump :data:`PROMPT_VERSION`, because the version participates in
 ``generation_id`` and therefore invalidates the cached reports.
+
+These constants are also the offline fallback for the Langfuse prompt
+management (see :mod:`llm_prompts`): when the Langfuse prompt cannot be
+fetched, exactly these texts are sent to the model under ``PROMPT_VERSION``.
 """
 
 from __future__ import annotations
 
 PROMPT_VERSION = "v1.3"
+
+#: Variables the Langfuse chat template (``astrology_interpretation``) may
+#: reference. The set is strict: a template that uses other variables or drops
+#: one of these is rejected at resolve time and the local prompts are used.
+INTERPRETATION_PROMPT_VARIABLES = ("chart_json", "chunks")
 
 ASTROLOGER_SYSTEM_PROMPT = """
 Ты — профессиональный астролог-исследователь, мастер классической академической астрологии (в духе школы С.А. Вронского). Твоя главная цель — не просто выдать сухой набор фактов, а провести глубокую, увлекательную и поддерживающую психологическую консультацию по натальной карте.
