@@ -140,13 +140,14 @@ class SynastryService:
             raise ValueError(f"contact_id must be an integer, got {contact_id!r}") from exc
 
         profile = await resolve_owner_profile(self.store, telegram_id=telegram)
+        # The owner's own natal data is validated first: a profile without
+        # birth data must get the onboarding hint, not the premium gate.
+        owner_birth = birth_data_from_profile(profile)
         if not has_premium(profile, telegram):
             raise PremiumRequiredError(PREMIUM_REQUIRED_MESSAGE)
         contact = await self.store.get_contact(contact_key, user_id=profile.user_id)
         if contact is None:
             raise ContactPermissionError(CONTACT_PERMISSION_MESSAGE)
-
-        owner_birth = birth_data_from_profile(profile)
         contact_birth = birth_data_from_profile(contact)
         owner_chart = await asyncio.to_thread(self._chart_builder, owner_birth)
         contact_chart = await asyncio.to_thread(self._chart_builder, contact_birth)

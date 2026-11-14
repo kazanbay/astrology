@@ -66,11 +66,16 @@ class FakeStore:
 
 
 def chart_for(birth):
-    """Deterministic charts: owner (Sun 0°, Moon 90°) vs contact (Sun 120°, Moon 190°, Venus 5°)."""
+    """Deterministic charts, geometry chosen for exact aspects.
+
+    owner: Sun 0°, Moon 120°; contact: Sun 60°, Moon 190°, Venus 5°.
+    Expected cross aspects: Moon-Sun sextile (orb 0), Sun-Sun sextile (orb 0),
+    Sun-Venus conjunction (orb 5), Moon-Venus trine (orb 5).
+    """
     if abs(birth.latitude - CONTACT_LAT) < 0.01:
-        longitudes = {"Sun": 120.0, "Moon": 190.0, "Venus": 5.0}
+        longitudes = {"Sun": 60.0, "Moon": 190.0, "Venus": 5.0}
     else:
-        longitudes = {"Sun": 0.0, "Moon": 90.0}
+        longitudes = {"Sun": 0.0, "Moon": 120.0}
     return {
         "dt_utc": birth.dt_utc.isoformat(),
         "latitude": birth.latitude,

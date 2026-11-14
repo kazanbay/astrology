@@ -96,8 +96,12 @@ def fixed_chart(birth):
     }
 
 
-def sampler_factory(sun_speed=0.5, sun_start=1.5, moon_speed=14.0, moon_start=87.0):
-    """Deterministic fake ephemeris: linear motion from FIXED_NOW."""
+def sampler_factory(sun_speed=0.5, sun_start=1.5, moon_speed=-14.0, moon_start=89.0):
+    """Deterministic fake ephemeris: linear motion from FIXED_NOW.
+
+    The Moon moves away from the natal Moon (89° -> 75°/day 1), so the minimal
+    Moon orb stays at the first sample (1.0°) and the assertion is stable.
+    """
 
     def sampler(moment: datetime) -> dict[str, float]:
         days = (moment - FIXED_NOW).total_seconds() / 86400.0

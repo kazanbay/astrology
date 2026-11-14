@@ -66,7 +66,7 @@ def test_forecast_text_marks_unknown_time_and_contacts():
     text = format_forecast_text(result)
 
     assert "👥 Мария (супруга)" in text
-    assert "время рождения неизвестно" in text
+    assert "Время рождения неизвестно" in text
 
 
 def test_forecast_without_events():
