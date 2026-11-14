@@ -116,6 +116,38 @@ DDL_STATEMENTS: Sequence[str] = (
     # index cannot serve without a sort.
     "CREATE INDEX IF NOT EXISTS idx_user_requests_user_requested_at "
     "ON user_chart_requests (user_id, requested_at DESC)",
+    # --- Owner natal profile and premium contacts (forecast/synastry layer) --
+    # The owner's natal data is persisted on the account so forecasts and
+    # synastry are rebuilt from the stored profile only; the service layer
+    # never accepts birth inputs from a request. The hash links the profile to
+    # the same canonical identity as ``charts_cache``.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_time TIME",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_time_unknown BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_lat DOUBLE PRECISION",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_lon DOUBLE PRECISION",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_timezone VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_city TEXT",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_chart_hash VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN NOT NULL DEFAULT FALSE",
+    # People whose charts the owner may calculate (premium feature). Rows are
+    # always scoped by ``user_id``: the store resolves a contact only through
+    # the pair (contact_id, user_id), so a foreign contact_id is unreachable.
+    """CREATE TABLE IF NOT EXISTS user_contacts (
+        contact_id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        relation VARCHAR(100),
+        birth_date DATE,
+        birth_time TIME,
+        birth_time_unknown BOOLEAN NOT NULL DEFAULT FALSE,
+        birth_lat DOUBLE PRECISION,
+        birth_lon DOUBLE PRECISION,
+        birth_timezone VARCHAR(64),
+        birth_city TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_user_contacts_user_id ON user_contacts (user_id)",
 )
 
 

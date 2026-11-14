@@ -322,6 +322,26 @@ def calculate_natal_chart(
     )
 
 
+def calculate_planet_longitudes(
+    dt_utc: datetime,
+    *,
+    node_type: str = "mean",
+) -> dict[str, float]:
+    """Geocentric ecliptic longitudes of every reported body at one instant.
+
+    The transit layer projects these longitudes onto the cusp ring of a stored
+    natal chart itself, so houses need no location here and none is requested.
+    """
+    moment = _utc_datetime(dt_utc)
+    node = _node_flavour(node_type)
+    julian_day = _julian_day(moment)
+    longitudes = {name: _ephemeris(julian_day, body, name)[0] for name, body in BODIES}
+    north_longitude, _speed = _ephemeris(julian_day, NODE_TYPES[node], "NorthNode")
+    longitudes["NorthNode"] = north_longitude
+    longitudes["SouthNode"] = normalize_longitude(north_longitude + 180.0)
+    return longitudes
+
+
 def _utc_datetime(value: datetime) -> datetime:
     if not isinstance(value, datetime):
         raise TypeError("dt_utc must be a datetime")
@@ -411,12 +431,8 @@ def _cusps_and_angles(
     return cusps, normalize_longitude(float(ascmc[0])), normalize_longitude(float(ascmc[1]))
 
 
-def _planet_position(
-    julian_day: float,
-    body: int,
-    name: str,
-    cusps: Sequence[float],
-) -> PlanetPosition:
+def _ephemeris(julian_day: float, body: int, name: str) -> tuple[float, float]:
+    """Return the (longitude, speed) pair of one body with uniform error wrapping."""
     try:
         result = swe.calc_ut(julian_day, body, swe.FLG_SWIEPH | swe.FLG_SPEED)
     except swe.Error as exc:
@@ -426,9 +442,16 @@ def _planet_position(
     if status < 0:
         detail = result[2] if len(result) > 2 else ""
         raise AstronomyError(f"Swiss Ephemeris failed for {name}: {str(detail).strip()}".rstrip(": "))
+    return normalize_longitude(float(coordinates[0])), float(coordinates[3])
 
-    longitude = normalize_longitude(float(coordinates[0]))
-    speed = float(coordinates[3])
+
+def _planet_position(
+    julian_day: float,
+    body: int,
+    name: str,
+    cusps: Sequence[float],
+) -> PlanetPosition:
+    longitude, speed = _ephemeris(julian_day, body, name)
     return PlanetPosition(
         longitude=longitude,
         sign=sign_of(longitude),

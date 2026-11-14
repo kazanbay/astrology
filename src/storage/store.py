@@ -7,7 +7,10 @@ backends (another database, a read-through cache) do not need PostgreSQL.
 Schema (created by ``init_db.py``):
 
 * ``users`` - one row per person, Telegram id for the MVP, email reserved for
-  web/app clients;
+  web/app clients; also the owner's natal profile (date, time, coordinates,
+  zone, chart hash) and the premium flag used by the forecast layer;
+* ``user_contacts`` - natal profiles of other people, owned by one user and
+  always resolved through the pair (contact_id, user_id);
 * ``charts_cache`` - one row per unique birth input, shared by every user with
   the same chart (twins included);
 * ``user_chart_requests`` - append-only history of "who asked for which chart
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any, Protocol, runtime_checkable
 
 import asyncpg
@@ -30,6 +33,8 @@ from .config import resolve_database_url
 PROFILE_NAME_LIMIT = 100
 USER_NAME_LIMIT = 255
 EMAIL_LIMIT = 255
+CONTACT_NAME_LIMIT = 255
+CONTACT_RELATION_LIMIT = 100
 
 UPSERT_USER_SQL = """
 WITH inserted AS (
@@ -111,6 +116,53 @@ UPDATE user_chart_requests
  WHERE request_id = $1
 """
 
+SELECT_PROFILE_SQL = """
+SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_premium,
+       birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
+       birth_timezone, birth_city, birth_chart_hash
+  FROM users
+ WHERE ($1::bigint IS NOT NULL AND telegram_id = $1::bigint)
+    OR ($2::text IS NOT NULL AND email = $2::text)
+ ORDER BY (CASE WHEN telegram_id = $1::bigint THEN 0 ELSE 1 END)
+ LIMIT 1
+"""
+
+SAVE_NATAL_PROFILE_SQL = """
+UPDATE users
+   SET birth_date = $2, birth_time = $3, birth_time_unknown = $4,
+       birth_lat = $5, birth_lon = $6, birth_timezone = $7,
+       birth_city = $8, birth_chart_hash = $9
+ WHERE user_id = $1
+"""
+
+SET_PREMIUM_SQL = "UPDATE users SET is_premium = $2 WHERE user_id = $1"
+
+SELECT_CONTACTS_SQL = """
+SELECT contact_id, user_id, name, relation, birth_date, birth_time, birth_time_unknown,
+       birth_lat, birth_lon, birth_timezone, birth_city, created_at
+  FROM user_contacts
+ WHERE user_id = $1
+ ORDER BY contact_id
+"""
+
+SELECT_CONTACT_SQL = """
+SELECT contact_id, user_id, name, relation, birth_date, birth_time, birth_time_unknown,
+       birth_lat, birth_lon, birth_timezone, birth_city, created_at
+  FROM user_contacts
+ WHERE contact_id = $1 AND user_id = $2
+"""
+
+INSERT_CONTACT_SQL = """
+INSERT INTO user_contacts
+       (user_id, name, relation, birth_date, birth_time, birth_time_unknown,
+        birth_lat, birth_lon, birth_timezone, birth_city)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING contact_id, user_id, name, relation, birth_date, birth_time, birth_time_unknown,
+          birth_lat, birth_lon, birth_timezone, birth_city, created_at
+"""
+
+DELETE_CONTACT_SQL = "DELETE FROM user_contacts WHERE contact_id = $1 AND user_id = $2"
+
 
 @dataclass(frozen=True)
 class CachedChart:
@@ -149,6 +201,112 @@ class GenerationRecord:
     created_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class NatalProfile:
+    """Natal data of one person as stored on ``users`` (the owner's profile)."""
+
+    birth_date: date
+    birth_time: time | None
+    birth_time_unknown: bool
+    birth_lat: float
+    birth_lon: float
+    birth_timezone: str
+    birth_city: str | None
+    birth_chart_hash: str
+
+
+@dataclass(frozen=True)
+class UserProfile:
+    """One ``users`` row: identity, premium flag and the owner's natal profile."""
+
+    user_id: int
+    telegram_id: int | None = None
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    display_name: str | None = None
+    is_premium: bool = False
+    birth_date: date | None = None
+    birth_time: time | None = None
+    birth_time_unknown: bool = False
+    birth_lat: float | None = None
+    birth_lon: float | None = None
+    birth_timezone: str | None = None
+    birth_city: str | None = None
+    birth_chart_hash: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form for LangGraph tools and logs (dates as ISO strings)."""
+        payload: dict[str, Any] = {
+            "user_id": self.user_id,
+            "telegram_id": self.telegram_id,
+            "email": self.email,
+            "display_name": self.display_name,
+            "is_premium": self.is_premium,
+            "birth_time_unknown": self.birth_time_unknown,
+            "birth_city": self.birth_city,
+            "birth_timezone": self.birth_timezone,
+            "birth_chart_hash": self.birth_chart_hash,
+        }
+        for key in ("birth_date", "birth_time"):
+            value = getattr(self, key)
+            payload[key] = value.isoformat() if value is not None else None
+        for key in ("birth_lat", "birth_lon"):
+            payload[key] = getattr(self, key)
+        return payload
+
+
+@dataclass(frozen=True)
+class ContactInput:
+    """Validated payload for one ``user_contacts`` row."""
+
+    name: str
+    relation: str | None = None
+    birth_date: date | None = None
+    birth_time: time | None = None
+    birth_time_unknown: bool = False
+    birth_lat: float | None = None
+    birth_lon: float | None = None
+    birth_timezone: str | None = None
+    birth_city: str | None = None
+
+
+@dataclass(frozen=True)
+class ContactProfile:
+    """One ``user_contacts`` row: a person the owner may calculate charts for."""
+
+    contact_id: int
+    user_id: int
+    name: str
+    relation: str | None = None
+    birth_date: date | None = None
+    birth_time: time | None = None
+    birth_time_unknown: bool = False
+    birth_lat: float | None = None
+    birth_lon: float | None = None
+    birth_timezone: str | None = None
+    birth_city: str | None = None
+    created_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form; see ``UserProfile.to_dict``."""
+        payload: dict[str, Any] = {
+            "contact_id": self.contact_id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "relation": self.relation,
+            "birth_time_unknown": self.birth_time_unknown,
+            "birth_city": self.birth_city,
+            "birth_timezone": self.birth_timezone,
+        }
+        for key in ("birth_date", "birth_time"):
+            value = getattr(self, key)
+            payload[key] = value.isoformat() if value is not None else None
+        for key in ("birth_lat", "birth_lon"):
+            payload[key] = getattr(self, key)
+        return payload
+
+
 @runtime_checkable
 class ChartStore(Protocol):
     """Persistence contract used by ``ChartPipeline``."""
@@ -182,6 +340,22 @@ class ChartStore(Protocol):
     async def save_generation(self, record: GenerationRecord) -> bool: ...
 
     async def attach_generation(self, request_id: int, generation_id: str) -> None: ...
+
+    async def get_user_profile(
+        self, *, telegram_id: int | str | None = None, email: str | None = None
+    ) -> UserProfile | None: ...
+
+    async def save_user_natal_profile(self, user_id: int, profile: NatalProfile) -> bool: ...
+
+    async def set_user_premium(self, user_id: int, is_premium: bool) -> bool: ...
+
+    async def list_contacts(self, user_id: int) -> list[ContactProfile]: ...
+
+    async def get_contact(self, contact_id: int, user_id: int) -> ContactProfile | None: ...
+
+    async def add_contact(self, user_id: int, contact: ContactInput) -> ContactProfile: ...
+
+    async def delete_contact(self, contact_id: int, user_id: int) -> bool: ...
 
 
 async def _configure_connection(connection: asyncpg.Connection) -> None:
@@ -254,6 +428,50 @@ def _display_name(value: str | None) -> str | None:
         return None
     name = str(value).strip()
     return name[:USER_NAME_LIMIT] or None
+
+
+def _contact_name(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("contact name must be a non-empty string")
+    name = value.strip()
+    if len(name) > CONTACT_NAME_LIMIT:
+        raise ValueError(f"contact name must be at most {CONTACT_NAME_LIMIT} characters")
+    return name
+
+
+def _contact_relation(value: str | None) -> str | None:
+    if value is None:
+        return None
+    relation = str(value).strip()
+    if not relation:
+        return None
+    if len(relation) > CONTACT_RELATION_LIMIT:
+        raise ValueError(f"relation must be at most {CONTACT_RELATION_LIMIT} characters")
+    return relation
+
+
+def _contact_city(value: str | None) -> str | None:
+    if value is None:
+        return None
+    city = str(value).strip()
+    return city[:255] or None
+
+
+def _contact_from_row(row: asyncpg.Record) -> ContactProfile:
+    return ContactProfile(
+        contact_id=int(row["contact_id"]),
+        user_id=int(row["user_id"]),
+        name=str(row["name"]),
+        relation=row["relation"],
+        birth_date=row["birth_date"],
+        birth_time=row["birth_time"],
+        birth_time_unknown=bool(row["birth_time_unknown"]),
+        birth_lat=row["birth_lat"],
+        birth_lon=row["birth_lon"],
+        birth_timezone=row["birth_timezone"],
+        birth_city=row["birth_city"],
+        created_at=row["created_at"],
+    )
 
 
 class PostgresChartStore:
@@ -418,5 +636,99 @@ class PostgresChartStore:
         status = await self.pool.execute(ATTACH_GENERATION_SQL, int(request_id), generation_id)
         if status.endswith(" 0"):
             raise ValueError(f"request_id {request_id} does not exist")
+
+    async def get_user_profile(
+        self, *, telegram_id: int | str | None = None, email: str | None = None
+    ) -> UserProfile | None:
+        """Return identity, premium flag and natal data of one account."""
+        telegram = _telegram_id(telegram_id)
+        address = _email(email)
+        if telegram is None and address is None:
+            raise ValueError("a user needs at least one of telegram_id or email")
+        row = await self.pool.fetchrow(SELECT_PROFILE_SQL, telegram, address)
+        if row is None:
+            return None
+        return UserProfile(
+            user_id=int(row["user_id"]),
+            telegram_id=row["telegram_id"],
+            email=row["email"],
+            first_name=row["first_name"],
+            last_name=row["last_name"],
+            display_name=row["display_name"],
+            is_premium=bool(row["is_premium"]),
+            birth_date=row["birth_date"],
+            birth_time=row["birth_time"],
+            birth_time_unknown=bool(row["birth_time_unknown"]),
+            birth_lat=row["birth_lat"],
+            birth_lon=row["birth_lon"],
+            birth_timezone=row["birth_timezone"],
+            birth_city=row["birth_city"],
+            birth_chart_hash=row["birth_chart_hash"],
+        )
+
+    async def save_user_natal_profile(self, user_id: int, profile: NatalProfile) -> bool:
+        """Write the owner's natal profile; ``False`` means the user does not exist."""
+        if len(profile.birth_chart_hash) != 64:
+            raise ValueError("birth_chart_hash must be a 64-character SHA-256 hex string")
+        status = await self.pool.execute(
+            SAVE_NATAL_PROFILE_SQL,
+            int(user_id),
+            profile.birth_date,
+            profile.birth_time,
+            bool(profile.birth_time_unknown),
+            profile.birth_lat,
+            profile.birth_lon,
+            profile.birth_timezone,
+            profile.birth_city,
+            profile.birth_chart_hash,
+        )
+        return status.endswith(" 1")
+
+    async def set_user_premium(self, user_id: int, is_premium: bool) -> bool:
+        """Toggle the premium flag; ``False`` means the user does not exist."""
+        status = await self.pool.execute(SET_PREMIUM_SQL, int(user_id), bool(is_premium))
+        return status.endswith(" 1")
+
+    async def list_contacts(self, user_id: int) -> list[ContactProfile]:
+        """Return every contact of one user, oldest first."""
+        rows = await self.pool.fetch(SELECT_CONTACTS_SQL, int(user_id))
+        return [_contact_from_row(row) for row in rows]
+
+    async def get_contact(self, contact_id: int, user_id: int) -> ContactProfile | None:
+        """Resolve a contact only through its owner: foreign ids look absent."""
+        row = await self.pool.fetchrow(SELECT_CONTACT_SQL, int(contact_id), int(user_id))
+        return _contact_from_row(row) if row is not None else None
+
+    async def add_contact(self, user_id: int, contact: ContactInput) -> ContactProfile:
+        """Insert one contact row and return the stored profile."""
+        name = _contact_name(contact.name)
+        relation = _contact_relation(contact.relation)
+        if contact.birth_date is None:
+            raise ValueError("a contact needs a birth date")
+        if contact.birth_lat is None or contact.birth_lon is None:
+            raise ValueError("a contact needs birth coordinates")
+        if not contact.birth_timezone:
+            raise ValueError("a contact needs a birth time zone")
+        row = await self.pool.fetchrow(
+            INSERT_CONTACT_SQL,
+            int(user_id),
+            name,
+            relation,
+            contact.birth_date,
+            contact.birth_time,
+            bool(contact.birth_time_unknown),
+            float(contact.birth_lat),
+            float(contact.birth_lon),
+            str(contact.birth_timezone),
+            _contact_city(contact.birth_city),
+        )
+        if row is None:  # pragma: no cover - would mean a lost row
+            raise RuntimeError("could not insert the contact row")
+        return _contact_from_row(row)
+
+    async def delete_contact(self, contact_id: int, user_id: int) -> bool:
+        """Delete a contact of this user; ``False`` when there was nothing to delete."""
+        status = await self.pool.execute(DELETE_CONTACT_SQL, int(contact_id), int(user_id))
+        return status.endswith(" 1")
 
 

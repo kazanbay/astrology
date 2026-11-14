@@ -6,7 +6,7 @@ tested and edited without touching the routing code.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, time
 from typing import Any
 
@@ -20,6 +20,8 @@ from aiogram.types import (
 from storage.birth import BirthData, local_to_utc
 
 BUTTON_CHART = "🔮 Рассчитать карту"
+BUTTON_FORECAST = "📅 Прогноз"
+BUTTON_SYNASTRY = "💞 Совместимость"
 BUTTON_HISTORY = "🕘 История"
 BUTTON_HELP = "❓ Помощь"
 
@@ -28,20 +30,42 @@ UNKNOWN_TIME_CALLBACK = "wizard:unknown_time"
 CONFIRM_CALLBACK = "wizard:confirm"
 EDIT_CALLBACK = "wizard:edit"
 
+FORECAST_PROFILE_CALLBACK = "forecast:profile"
+FORECAST_SELF_CALLBACK = "forecast:profile:self"
+FORECAST_CONTACTS_CALLBACK = "forecast:profile:contacts"
+FORECAST_PICK_PREFIX = "forecast:pick:"
+FORECAST_RUN_PREFIX = "forecast:run:"
+SYNASTRY_PREFIX = "synastry:run:"
+CONTACTS_DELETE_PREFIX = "contacts:del:"
+
+#: Forecast intervals of the TZ: day, week, month, year.
+INTERVAL_BUTTONS: tuple[tuple[str, str], ...] = (
+    ("📅 День", "day"),
+    ("📆 Неделя", "week"),
+    ("🗓 Месяц", "month"),
+    ("📈 Год", "year"),
+)
+
 GREETING = (
     "Здравствуйте! Я — астрологический помощник на классических первоисточниках.\n\n"
     "Я рассчитываю натальную карту по эфемеридам, подбираю трактовки из книг "
     "С. А. Вронского и готовлю персональный разбор.\n\n"
     "Чтобы начать, нажмите «🔮 Рассчитать карту» — я по шагам спрошу имя "
     "(его можно пропустить), дату, время и место рождения.\n\n"
-    "Можно и одной командой: /chart 1990-08-15 12:00 Москва"
+    "Можно и одной командой: /chart 1990-08-15 12:00 Москва\n"
+    "После расчёта карты доступны «📅 Прогноз» и «💞 Совместимость»."
 )
 
 HELP = (
     "Что я умею:\n\n"
     "🔮 «Рассчитать карту» — пошаговый ввод данных рождения и разбор карты.\n"
+    "📅 «Прогноз» — транзиты на день, неделю, месяц или год по вашему профилю.\n"
+    "💞 «Совместимость» — синастрия с человеком из вашего списка (премиум).\n"
     "🕘 «История» — ваши прошлые запросы.\n"
     "💬 Любой вопрос текстом — поиск ответа по книгам.\n\n"
+    "Контакты для прогнозов и совместимости:\n"
+    "/contact Мария | супруга | 15.03.1992 14:30 | Казань\n"
+    "/contacts — список и удаление.\n\n"
     "Быстрый расчёт одной командой:\n"
     "/chart 1990-08-15 12:00 Москва\n\n"
     "Важно: время рождения нужно указывать местное, по часам места рождения. "
@@ -74,8 +98,9 @@ def main_menu() -> ReplyKeyboardMarkup:
     """Persistent bottom menu shown after /start."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BUTTON_CHART)],
-            [KeyboardButton(text=BUTTON_HISTORY), KeyboardButton(text=BUTTON_HELP)],
+            [KeyboardButton(text=BUTTON_CHART), KeyboardButton(text=BUTTON_FORECAST)],
+            [KeyboardButton(text=BUTTON_SYNASTRY), KeyboardButton(text=BUTTON_HISTORY)],
+            [KeyboardButton(text=BUTTON_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -103,6 +128,65 @@ def confirm_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✏️ Изменить данные", callback_data=EDIT_CALLBACK)],
         ]
     )
+
+
+def forecast_profile_keyboard() -> InlineKeyboardMarkup:
+    """Who the forecast is built for: the owner (free) or a contact (premium)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Мой прогноз", callback_data=FORECAST_SELF_CALLBACK)],
+            [
+                InlineKeyboardButton(
+                    text="👥 Другие люди (Премиум)", callback_data=FORECAST_CONTACTS_CALLBACK
+                )
+            ],
+        ]
+    )
+
+
+def forecast_interval_keyboard(contact_id: int | None) -> InlineKeyboardMarkup:
+    """Forecast intervals; the selected person is encoded in the callback."""
+    target = "self" if contact_id is None else f"c{contact_id}"
+    buttons = [
+        InlineKeyboardButton(text=label, callback_data=f"{FORECAST_RUN_PREFIX}{key}:{target}")
+        for label, key in INTERVAL_BUTTONS
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[:2], buttons[2:]])
+
+
+def contact_pick_keyboard(
+    contacts: Iterable[Any],
+    callback_prefix: str,
+    *,
+    cancel_callback: str | None = None,
+) -> InlineKeyboardMarkup:
+    """One button per contact, namespaced by ``callback_prefix``."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=contact.name + (f" ({contact.relation})" if contact.relation else ""),
+                callback_data=f"{callback_prefix}{contact.contact_id}",
+            )
+        ]
+        for contact in contacts
+    ]
+    if cancel_callback:
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=cancel_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def contacts_delete_keyboard(contacts: Iterable[Any]) -> InlineKeyboardMarkup | None:
+    """One delete button per contact; ``None`` when the list is empty."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"🗑 {contact.name}",
+                callback_data=f"{CONTACTS_DELETE_PREFIX}{contact.contact_id}",
+            )
+        ]
+        for contact in contacts
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def format_confirmation(

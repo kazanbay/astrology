@@ -24,24 +24,56 @@ from bot_ui import (
     ASK_PLACE,
     ASK_TIME,
     BUTTON_CHART,
+    BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
+    BUTTON_SYNASTRY,
+    CONTACTS_DELETE_PREFIX,
     CONFIRM_CALLBACK,
     EDIT_CALLBACK,
+    FORECAST_CONTACTS_CALLBACK,
+    FORECAST_PICK_PREFIX,
+    FORECAST_PROFILE_CALLBACK,
+    FORECAST_RUN_PREFIX,
+    FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
     SKIP_NAME_CALLBACK,
+    SYNASTRY_PREFIX,
     UNKNOWN_TIME_CALLBACK,
+    build_birth_data,
     confirm_keyboard,
+    contact_pick_keyboard,
+    contacts_delete_keyboard,
+    forecast_interval_keyboard,
+    forecast_profile_keyboard,
     format_confirmation,
     main_menu,
-    build_birth_data,
     skip_name_keyboard,
     unknown_time_keyboard,
 )
 from generator.report import ChartReportService
 from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
+from services.forecast import ForecastService
+from services.presentation import (
+    format_contacts_list,
+    format_forecast_text,
+    format_synastry_text,
+)
+from services.profiles import (
+    CONTACT_COMMAND_USAGE,
+    PREMIUM_REQUIRED_MESSAGE,
+    ContactPermissionError,
+    PremiumRequiredError,
+    ProfileError,
+    create_contact_from_command,
+    has_premium,
+    parse_contact_command,
+    resolve_owner_profile,
+    save_owner_profile,
+)
+from services.synastry import SynastryService
 from storage.birth import (
     BIRTH_COMMAND_USAGE,
     BirthData,
@@ -103,10 +135,44 @@ def create_dispatcher(
     generator: RAGGenerator,
     chart_pipeline: ChartPipeline | None = None,
     report_service: ChartReportService | None = None,
+    forecast_service: ForecastService | None = None,
+    synastry_service: SynastryService | None = None,
 ) -> Dispatcher:
     """Create handlers bound to the single startup instances of the services."""
     dispatcher = Dispatcher()
     router = Router()
+
+    def services_ready() -> bool:
+        """True when the PostgreSQL-backed features (history, forecasts) are on."""
+        return (
+            chart_pipeline is not None
+            and forecast_service is not None
+            and synastry_service is not None
+        )
+
+    async def _show_inline(callback: CallbackQuery, text: str, markup: Any) -> None:
+        """Replace the message text and keyboard; fall back to a new message."""
+        if callback.message is None:
+            return
+        try:
+            await callback.message.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest:
+            await callback.message.answer(text, reply_markup=markup)
+
+    async def _pick_contacts(
+        telegram_id: int, *, require_premium: bool
+    ) -> tuple[list[Any], str | None]:
+        """Load the user's contacts with the TZ permission rules applied."""
+        if chart_pipeline is None:
+            return [], "Контакты недоступны: не настроено подключение к PostgreSQL."
+        try:
+            profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=telegram_id)
+        except ProfileError as exc:
+            return [], str(exc)
+        if require_premium and not has_premium(profile, telegram_id):
+            return [], PREMIUM_REQUIRED_MESSAGE
+        contacts = await chart_pipeline.store.list_contacts(profile.user_id)
+        return contacts, None
 
     async def start_wizard(message: Message, state: FSMContext) -> None:
         await state.clear()
@@ -170,6 +236,15 @@ def create_dispatcher(
             logger.exception("chart request failed")
             await message.answer("Не удалось рассчитать карту. Попробуйте позже.")
             return False
+
+        # The forecast tools read birth data from the stored profile only, so
+        # every successful chart request refreshes the owner's natal profile.
+        try:
+            await save_owner_profile(
+                chart_pipeline.store, result.user_id, birth, time_unknown=time_unknown
+            )
+        except Exception:
+            logger.exception("owner natal profile save failed")
 
         summary = format_chart_reply(result, technical=False)
         if time_unknown:
@@ -397,6 +472,269 @@ def create_dispatcher(
             time_unknown=bool(data.get("time_unknown")),
         )
 
+    @router.message(Command("forecast"))
+    @router.message(F.text == BUTTON_FORECAST)
+    async def forecast_entry(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if not services_ready():
+            await message.answer("Прогнозы недоступны: не настроено подключение к PostgreSQL.")
+            return
+        await message.answer(
+            "Выберите, для кого построить прогноз:", reply_markup=forecast_profile_keyboard()
+        )
+
+    @router.callback_query(F.data == FORECAST_PROFILE_CALLBACK)
+    async def forecast_back_to_profile(callback: CallbackQuery) -> None:
+        await callback.answer()
+        await _show_inline(
+            callback, "Выберите, для кого построить прогноз:", forecast_profile_keyboard()
+        )
+
+    @router.callback_query(F.data == FORECAST_SELF_CALLBACK)
+    async def forecast_self(callback: CallbackQuery) -> None:
+        await callback.answer()
+        await _show_inline(callback, "На какой период?", forecast_interval_keyboard(None))
+
+    @router.callback_query(F.data == FORECAST_CONTACTS_CALLBACK)
+    async def forecast_contacts(callback: CallbackQuery) -> None:
+        await callback.answer()
+        contacts, error_text = await _pick_contacts(callback.from_user.id, require_premium=True)
+        if error_text:
+            await _show_inline(callback, error_text, None)
+            return
+        if not contacts:
+            await _show_inline(callback, format_contacts_list([]), None)
+            return
+        await _show_inline(
+            callback,
+            "Выберите человека:",
+            contact_pick_keyboard(
+                contacts, FORECAST_PICK_PREFIX, cancel_callback=FORECAST_PROFILE_CALLBACK
+            ),
+        )
+
+    @router.callback_query(F.data.startswith(FORECAST_PICK_PREFIX))
+    async def forecast_pick(callback: CallbackQuery) -> None:
+        await callback.answer()
+        raw = callback.data[len(FORECAST_PICK_PREFIX):]
+        try:
+            contact_id = int(raw)
+        except ValueError:
+            await _show_inline(
+                callback, "Не удалось определить контакт. Откройте прогноз заново.", None
+            )
+            return
+        await _show_inline(callback, "На какой период?", forecast_interval_keyboard(contact_id))
+
+    @router.callback_query(F.data.startswith(FORECAST_RUN_PREFIX))
+    async def forecast_run(callback: CallbackQuery) -> None:
+        payload = callback.data[len(FORECAST_RUN_PREFIX):]
+        interval, separator, target = payload.partition(":")
+        contact_id: int | None = None
+        if target.startswith("c"):
+            try:
+                contact_id = int(target[1:])
+            except ValueError:
+                contact_id = None
+        if not separator or (target != "self" and contact_id is None):
+            await callback.answer(
+                "Не удалось разобрать команду. Откройте прогноз заново.", show_alert=True
+            )
+            return
+        await callback.answer()
+        if callback.message is None:
+            return
+        await run_forecast(callback.message, callback.from_user, interval, contact_id)
+
+    async def run_forecast(
+        message: Message, user: User, interval: str, contact_id: int | None
+    ) -> None:
+        """Run the forecast tool and send the rendered report."""
+        if forecast_service is None:
+            await message.answer("Прогнозы недоступны: не настроено подключение к PostgreSQL.")
+            return
+        await message.answer("Считаю транзиты…")
+        try:
+            result = await forecast_service.get_forecast_for_interval(
+                user.id, interval, contact_id=contact_id
+            )
+        except ProfileError as exc:
+            await message.answer(str(exc))
+            return
+        except PremiumRequiredError as exc:
+            await message.answer(str(exc), reply_markup=main_menu())
+            return
+        except ContactPermissionError as exc:
+            await message.answer(str(exc))
+            return
+        except BirthInputError as exc:
+            await message.answer(f"Данные профиля неполны: {exc}")
+            return
+        except AstronomyError as exc:
+            await message.answer(f"Астрономический расчёт не удался: {exc}")
+            return
+        except Exception:
+            logger.exception("forecast request failed")
+            await message.answer("Не удалось построить прогноз. Попробуйте позже.")
+            return
+        for part in split_message(format_forecast_text(result)):
+            await message.answer(part, disable_web_page_preview=True)
+
+    @router.message(Command("synastry"))
+    @router.message(F.text == BUTTON_SYNASTRY)
+    async def synastry_entry(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if not services_ready():
+            await message.answer("Совместимость недоступна: не настроено подключение к PostgreSQL.")
+            return
+        user = message.from_user
+        if user is None:
+            await message.answer("Не удалось определить пользователя Telegram.")
+            return
+        contacts, error_text = await _pick_contacts(user.id, require_premium=True)
+        if error_text:
+            await message.answer(error_text, reply_markup=main_menu())
+            return
+        if not contacts:
+            await message.answer(format_contacts_list([]), reply_markup=main_menu())
+            return
+        await message.answer(
+            "Выберите человека для проверки совместимости:",
+            reply_markup=contact_pick_keyboard(contacts, SYNASTRY_PREFIX),
+        )
+
+    @router.callback_query(F.data.startswith(SYNASTRY_PREFIX))
+    async def synastry_run(callback: CallbackQuery) -> None:
+        raw = callback.data[len(SYNASTRY_PREFIX):]
+        await callback.answer()
+        if callback.message is None:
+            return
+        try:
+            contact_id = int(raw)
+        except ValueError:
+            await callback.message.answer(
+                "Не удалось определить контакт. Откройте совместимость заново."
+            )
+            return
+        if synastry_service is None:
+            await callback.message.answer(
+                "Совместимость недоступна: не настроено подключение к PostgreSQL."
+            )
+            return
+        await callback.message.answer("Считаю совместимость…")
+        try:
+            result = await synastry_service.check_synastry(callback.from_user.id, contact_id)
+        except ProfileError as exc:
+            await callback.message.answer(str(exc))
+            return
+        except PremiumRequiredError as exc:
+            await callback.message.answer(str(exc), reply_markup=main_menu())
+            return
+        except ContactPermissionError as exc:
+            await callback.message.answer(str(exc))
+            return
+        except BirthInputError as exc:
+            await callback.message.answer(f"Данные профиля неполны: {exc}")
+            return
+        except AstronomyError as exc:
+            await callback.message.answer(f"Астрономический расчёт не удался: {exc}")
+            return
+        except Exception:
+            logger.exception("synastry request failed")
+            await callback.message.answer("Не удалось проверить совместимость. Попробуйте позже.")
+            return
+        for part in split_message(format_synastry_text(result)):
+            await callback.message.answer(part, disable_web_page_preview=True)
+
+    @router.message(Command("contacts"))
+    async def contacts_command(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if not services_ready():
+            await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
+            return
+        user = message.from_user
+        if user is None:
+            await message.answer("Не удалось определить пользователя Telegram.")
+            return
+        contacts, error_text = await _pick_contacts(user.id, require_premium=False)
+        if error_text:
+            await message.answer(error_text)
+            return
+        await message.answer(
+            format_contacts_list([contact.to_dict() for contact in contacts]),
+            reply_markup=contacts_delete_keyboard(contacts),
+        )
+
+    @router.callback_query(F.data.startswith(CONTACTS_DELETE_PREFIX))
+    async def contacts_delete(callback: CallbackQuery) -> None:
+        await callback.answer()
+        raw = callback.data[len(CONTACTS_DELETE_PREFIX):]
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            contact_id = int(raw)
+        except ValueError:
+            await callback.message.answer("Не удалось определить контакт.")
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await callback.message.answer(str(exc))
+            return
+        deleted = await chart_pipeline.store.delete_contact(contact_id, profile.user_id)
+        contacts = await chart_pipeline.store.list_contacts(profile.user_id)
+        text = format_contacts_list([contact.to_dict() for contact in contacts])
+        if not deleted:
+            text = "Контакт не найден.\n\n" + text
+        await _show_inline(callback, text, contacts_delete_keyboard(contacts))
+
+    @router.message(Command("contact"))
+    async def contact_add_command(message: Message, command: CommandObject) -> None:
+        if not services_ready():
+            await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
+            return
+        user = message.from_user
+        if user is None:
+            await message.answer("Не удалось определить пользователя Telegram.")
+            return
+        try:
+            profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=user.id)
+        except ProfileError as exc:
+            await message.answer(str(exc))
+            return
+        if not has_premium(profile, user.id):
+            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=main_menu())
+            return
+        try:
+            parsed = parse_contact_command(command.args)
+        except BirthInputError as exc:
+            await message.answer(f"{exc}\nФормат: {CONTACT_COMMAND_USAGE}")
+            return
+        await message.answer(f"Ищу город «{parsed.city}»…")
+        try:
+            geo = await asyncio.to_thread(geocode_city, parsed.city, timeout=GEO_TIMEOUT)
+            tz_name = await asyncio.to_thread(detect_timezone, geo["lat"], geo["lon"])
+            contact = await create_contact_from_command(
+                chart_pipeline.store, profile.user_id, parsed, geo, tz_name
+            )
+        except BirthInputError as exc:
+            await message.answer(f"Не удалось сохранить контакт: {exc}")
+            return
+        except Exception:
+            logger.exception("contact creation failed")
+            await message.answer("Не удалось сохранить контакт. Попробуйте позже.")
+            return
+        relation = f" ({contact.relation})" if contact.relation else ""
+        time_text = "" if contact.birth_time is None else f" {contact.birth_time.strftime('%H:%M')}"
+        await message.answer(
+            f"✅ Контакт сохранён: {contact.name}{relation}, "
+            f"{contact.birth_date.strftime('%d.%m.%Y')}{time_text}, "
+            f"{contact.birth_city or parsed.city}.",
+            reply_markup=main_menu(),
+        )
+
     @router.message()
     async def text_handler(message: Message, bot: Bot) -> None:
         user_query = message.text
@@ -448,18 +786,26 @@ async def main() -> None:
     store: PostgresChartStore | None = None
     chart_pipeline: ChartPipeline | None = None
     report_service: ChartReportService | None = None
+    forecast_service: ForecastService | None = None
+    synastry_service: SynastryService | None = None
     if os.getenv("DATABASE_URL", "").strip():
         try:
             store = await PostgresChartStore.connect()
             chart_pipeline = ChartPipeline(store)
             report_service = ChartReportService(store)
+            forecast_service = ForecastService(store)
+            synastry_service = SynastryService(store)
         except Exception:
             logger.exception("chart storage is unavailable; /chart and /history are disabled")
             store = None
             chart_pipeline = None
             report_service = None
+            forecast_service = None
+            synastry_service = None
 
-    dispatcher = create_dispatcher(retriever, generator, chart_pipeline, report_service)
+    dispatcher = create_dispatcher(
+        retriever, generator, chart_pipeline, report_service, forecast_service, synastry_service
+    )
     try:
         await dispatcher.start_polling(bot)
     finally:

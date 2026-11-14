@@ -8,6 +8,7 @@ id and removes exactly those rows afterwards.
 import asyncio
 import hashlib
 import uuid
+from datetime import date, datetime, time, timezone
 
 import pytest
 
@@ -112,3 +113,110 @@ async def _email_identity_scenario() -> None:
 
 def test_postgres_store_resolves_user_by_email():
     asyncio.run(_email_identity_scenario())
+
+
+async def _profile_contacts_scenario() -> None:
+    from services.profiles import save_owner_profile
+    from storage.birth import BirthData
+    from storage.store import ContactInput, NatalProfile
+
+    store = await PostgresChartStore.connect(max_size=2)
+    user_id: int | None = None
+    other_id: int | None = None
+    try:
+        user_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест")
+        birth = BirthData(
+            dt_utc=datetime(1990, 8, 15, 8, 0, tzinfo=timezone.utc),
+            latitude=55.7558,
+            longitude=37.6173,
+            city="Москва, Россия",
+            timezone="Europe/Moscow",
+            datetime_local="1990-08-15T12:00:00",
+        )
+        assert await store.save_user_natal_profile(
+            user_id,
+            NatalProfile(
+                birth_date=date(1990, 8, 15),
+                birth_time=None,
+                birth_time_unknown=True,
+                birth_lat=birth.latitude,
+                birth_lon=birth.longitude,
+                birth_timezone="Europe/Moscow",
+                birth_city=birth.city,
+                birth_chart_hash="a" * 64,
+            ),
+        ) is True
+
+        profile = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert profile is not None
+        assert profile.birth_date == date(1990, 8, 15)
+        assert profile.birth_time is None
+        assert profile.birth_time_unknown is True
+        assert abs(profile.birth_lat - 55.7558) < 1e-9
+        assert profile.birth_timezone == "Europe/Moscow"
+        assert profile.birth_city == "Москва, Россия"
+        assert profile.birth_chart_hash == "a" * 64
+
+        assert await store.set_user_premium(user_id, True) is True
+        profile = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert profile is not None and profile.is_premium is True
+
+        contact = await store.add_contact(
+            user_id,
+            ContactInput(
+                name="Мария",
+                relation="супруга",
+                birth_date=date(1992, 3, 15),
+                birth_time=time(14, 30),
+                birth_time_unknown=False,
+                birth_lat=55.79,
+                birth_lon=49.11,
+                birth_timezone="Europe/Moscow",
+                birth_city="Казань",
+            ),
+        )
+        unknown = await store.add_contact(
+            user_id,
+            ContactInput(
+                name="Пётр",
+                relation=None,
+                birth_date=date(1985, 11, 2),
+                birth_time=None,
+                birth_time_unknown=True,
+                birth_lat=59.94,
+                birth_lon=30.31,
+                birth_timezone="Europe/Moscow",
+                birth_city="Санкт-Петербург",
+            ),
+        )
+        assert unknown.birth_time is None and unknown.birth_time_unknown is True
+
+        contacts = await store.list_contacts(user_id)
+        assert [item.name for item in contacts] == ["Мария", "Пётр"]
+
+        # A contact is reachable only through its owner's id.
+        other_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID + 1, first_name="Другой")
+        assert await store.get_contact(contact.contact_id, user_id=other_id) is None
+        assert await store.delete_contact(contact.contact_id, user_id=other_id) is False
+        assert await store.delete_contact(contact.contact_id, user_id=user_id) is True
+        remaining = await store.list_contacts(user_id)
+        assert [item.name for item in remaining] == ["Пётр"]
+        assert await store.get_contact(contact.contact_id, user_id=user_id) is None
+
+        # The save path of the service layer (bot flow) writes the same columns.
+        await save_owner_profile(store, user_id, birth, time_unknown=False)
+        refreshed = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert refreshed is not None
+        assert refreshed.birth_time == time(12, 0)
+        assert refreshed.birth_time_unknown is False
+        assert len(refreshed.birth_chart_hash) == 64
+    finally:
+        if user_id is not None:
+            await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
+        if other_id is not None:
+            await store.pool.execute("DELETE FROM users WHERE user_id = $1", other_id)
+        await store.close()
+
+
+def test_postgres_store_natal_profile_and_contacts():
+    asyncio.run(_profile_contacts_scenario())
