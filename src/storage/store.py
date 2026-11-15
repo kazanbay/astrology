@@ -320,21 +320,25 @@ INSERT_EVENT_SQL = "INSERT INTO analytics_events (user_id, event_type) VALUES ($
 ANALYTICS_SQL = """
 SELECT
   (SELECT count(*) FROM users) AS total_users,
-  (SELECT count(*) FROM users WHERE created_at >= $1) AS new_users,
+  (SELECT count(*) FROM users
+    WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC')) AS new_users,
   (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '24 hours') AS dau,
   (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '7 days') AS wau,
   (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '30 days') AS mau,
   (SELECT count(*) FROM users
     WHERE is_premium OR (premium_until IS NOT NULL AND premium_until > now())) AS active_premium,
-  (SELECT count(*) FROM payments WHERE created_at >= $1) AS new_payments,
-  (SELECT COALESCE(sum(stars), 0) FROM payments WHERE created_at >= $1) AS revenue_stars,
+  (SELECT count(*) FROM payments
+    WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC')) AS new_payments,
+  (SELECT COALESCE(sum(stars), 0) FROM payments
+    WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC')) AS revenue_stars,
   (SELECT count(*) FROM analytics_events
-    WHERE event_type = 'chart' AND created_at >= $1) AS charts,
+    WHERE event_type = 'chart' AND created_at >= $1::timestamptz) AS charts,
   (SELECT count(*) FROM analytics_events
-    WHERE event_type = 'forecast' AND created_at >= $1) AS forecasts,
+    WHERE event_type = 'forecast' AND created_at >= $1::timestamptz) AS forecasts,
   (SELECT count(*) FROM analytics_events
-    WHERE event_type = 'synastry' AND created_at >= $1) AS synastry,
-  (SELECT count(*) FROM feedback WHERE created_at >= $1) AS feedback_new,
+    WHERE event_type = 'synastry' AND created_at >= $1::timestamptz) AS synastry,
+  (SELECT count(*) FROM feedback
+    WHERE created_at >= $1::timestamptz) AS feedback_new,
   (SELECT count(*) FROM feedback WHERE status = 'new') AS feedback_open
 """
 
