@@ -36,6 +36,9 @@ from bot_ui import (
     CHART_CONTACT_RUN_PREFIX,
     CHART_SELF_CARD_CALLBACK,
     CONTACTS_ADD_CALLBACK,
+    CONTACTS_ADD_CHART_CALLBACK,
+    CONTACTS_ADD_FORECAST_CALLBACK,
+    CONTACTS_ADD_SYNASTRY_CALLBACK,
     CONTACTS_BACK_CALLBACK,
     CONTACTS_DELETE_PREFIX,
     CONTACTS_EDIT_PREFIX,
@@ -110,7 +113,6 @@ from services.premium import (
     load_catalog,
 )
 from services.presentation import (
-    format_contacts_list,
     format_forecast_text,
     format_synastry_text,
 )
@@ -918,13 +920,25 @@ def create_dispatcher(
             await _show_inline(callback, error_text, None)
             return
         if not contacts:
-            await _show_inline(callback, format_contacts_list([]), None)
+            await _show_inline(
+                callback,
+                "Список контактов пуст — добавьте человека, чтобы построить прогноз.",
+                contact_pick_keyboard(
+                    [],
+                    FORECAST_PICK_PREFIX,
+                    add_callback=CONTACTS_ADD_FORECAST_CALLBACK,
+                    cancel_callback=FORECAST_PROFILE_CALLBACK,
+                ),
+            )
             return
         await _show_inline(
             callback,
             "Выберите человека:",
             contact_pick_keyboard(
-                contacts, FORECAST_PICK_PREFIX, cancel_callback=FORECAST_PROFILE_CALLBACK
+                contacts,
+                FORECAST_PICK_PREFIX,
+                add_callback=CONTACTS_ADD_FORECAST_CALLBACK,
+                cancel_callback=FORECAST_PROFILE_CALLBACK,
             ),
         )
 
@@ -1034,11 +1048,22 @@ def create_dispatcher(
             await message.answer(error_text, reply_markup=main_menu())
             return
         if not contacts:
-            await message.answer(format_contacts_list([]), reply_markup=main_menu())
+            await message.answer(
+                "Список контактов пуст — добавьте человека, чтобы проверить совместимость.",
+                reply_markup=contact_pick_keyboard(
+                    [],
+                    SYNASTRY_PREFIX,
+                    add_callback=CONTACTS_ADD_SYNASTRY_CALLBACK,
+                ),
+            )
             return
         await message.answer(
             "Выберите человека для проверки совместимости:",
-            reply_markup=contact_pick_keyboard(contacts, SYNASTRY_PREFIX),
+            reply_markup=contact_pick_keyboard(
+                contacts,
+                SYNASTRY_PREFIX,
+                add_callback=CONTACTS_ADD_SYNASTRY_CALLBACK,
+            ),
         )
 
     @router.callback_query(F.data.startswith(SYNASTRY_PREFIX))
@@ -1128,14 +1153,24 @@ def create_dispatcher(
         contacts = await chart_pipeline.store.list_contacts(profile.user_id)
         if not contacts:
             await _show_inline(
-                callback, format_contacts_screen([]), contacts_list_keyboard([])
+                callback,
+                "Список контактов пуст — добавьте человека, чтобы рассчитать его карту.",
+                contact_pick_keyboard(
+                    [],
+                    CHART_CONTACT_RUN_PREFIX,
+                    add_callback=CONTACTS_ADD_CHART_CALLBACK,
+                    cancel_callback=CHART_SELF_CARD_CALLBACK,
+                ),
             )
             return
         await _show_inline(
             callback,
             "Кому рассчитать карту?",
             contact_pick_keyboard(
-                contacts, CHART_CONTACT_RUN_PREFIX, cancel_callback=CHART_SELF_CARD_CALLBACK
+                contacts,
+                CHART_CONTACT_RUN_PREFIX,
+                add_callback=CONTACTS_ADD_CHART_CALLBACK,
+                cancel_callback=CHART_SELF_CARD_CALLBACK,
             ),
         )
 
@@ -1268,6 +1303,24 @@ def create_dispatcher(
         if callback.message is not None:
             await start_contact_wizard(callback.message, state)
 
+    @router.callback_query(F.data == CONTACTS_ADD_SYNASTRY_CALLBACK)
+    async def contacts_add_synastry(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await start_contact_wizard(callback.message, state, return_to="synastry")
+
+    @router.callback_query(F.data == CONTACTS_ADD_FORECAST_CALLBACK)
+    async def contacts_add_forecast(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await start_contact_wizard(callback.message, state, return_to="forecast")
+
+    @router.callback_query(F.data == CONTACTS_ADD_CHART_CALLBACK)
+    async def contacts_add_chart(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await start_contact_wizard(callback.message, state, return_to="chart")
+
     @router.callback_query(F.data.startswith(CONTACTS_EDIT_PREFIX))
     async def contacts_edit(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
@@ -1318,7 +1371,11 @@ def create_dispatcher(
         await _show_inline(callback, text, contacts_list_keyboard(contacts))
 
     async def start_contact_wizard(
-        message: Message, state: FSMContext, *, contact: Any = None
+        message: Message,
+        state: FSMContext,
+        *,
+        contact: Any = None,
+        return_to: str | None = None,
     ) -> None:
         """Step-by-step contact entry; ``contact`` switches to edit mode."""
         await state.clear()
@@ -1339,6 +1396,8 @@ def create_dispatcher(
         await state.update_data(contact_owner_id=profile.user_id)
         if contact is not None:
             await state.update_data(contact_edit_id=contact.contact_id)
+        if return_to:
+            await state.update_data(contact_return_to=return_to)
         await state.set_state(ContactForm.name)
         if contact is not None:
             await message.answer(
@@ -1472,7 +1531,44 @@ def create_dispatcher(
             logger.exception("contact creation failed")
             await message.answer("Не удалось сохранить контакт. Попробуйте позже.")
             return
+
+        return_to = data.get("contact_return_to")
         await state.clear()
+        if return_to == "synastry":
+            contacts = await chart_pipeline.store.list_contacts(owner_id)
+            await message.answer(
+                "✅ Контакт сохранён.\n\nВыберите человека для проверки совместимости:",
+                reply_markup=contact_pick_keyboard(
+                    contacts,
+                    SYNASTRY_PREFIX,
+                    add_callback=CONTACTS_ADD_SYNASTRY_CALLBACK,
+                ),
+            )
+            return
+        if return_to == "forecast":
+            contacts = await chart_pipeline.store.list_contacts(owner_id)
+            await message.answer(
+                "✅ Контакт сохранён.\n\nВыберите человека:",
+                reply_markup=contact_pick_keyboard(
+                    contacts,
+                    FORECAST_PICK_PREFIX,
+                    add_callback=CONTACTS_ADD_FORECAST_CALLBACK,
+                    cancel_callback=FORECAST_PROFILE_CALLBACK,
+                ),
+            )
+            return
+        if return_to == "chart":
+            contacts = await chart_pipeline.store.list_contacts(owner_id)
+            await message.answer(
+                "✅ Контакт сохранён.\n\nКому рассчитать карту?",
+                reply_markup=contact_pick_keyboard(
+                    contacts,
+                    CHART_CONTACT_RUN_PREFIX,
+                    add_callback=CONTACTS_ADD_CHART_CALLBACK,
+                    cancel_callback=CHART_SELF_CARD_CALLBACK,
+                ),
+            )
+            return
         await message.answer(format_contact_saved(contact), reply_markup=main_menu())
 
     @router.message(Command("contact"))

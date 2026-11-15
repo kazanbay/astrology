@@ -19,6 +19,8 @@ from bot_ui import (
     CHART_CONTACT_PICK_CALLBACK,
     CONFIRM_CALLBACK,
     CONTACTS_ADD_CALLBACK,
+    CONTACTS_ADD_FORECAST_CALLBACK,
+    CONTACTS_ADD_SYNASTRY_CALLBACK,
     CONTACTS_BACK_CALLBACK,
     CONTACTS_DELETE_PREFIX,
     CONTACTS_EDIT_PREFIX,
@@ -307,6 +309,16 @@ def test_premium_upsell_offers_buy_and_invite():
         "🔗 Пригласить друга",
     ]
     assert callback_data(markup) == [PREMIUM_MENU_CALLBACK, INVITE_CALLBACK]
+
+
+def test_contact_pick_keyboard_can_offer_adding_a_contact():
+    markup = contact_pick_keyboard(
+        [contact("Анна", None, 7)],
+        SYNASTRY_PREFIX,
+        add_callback=CONTACTS_ADD_SYNASTRY_CALLBACK,
+    )
+
+    assert callback_data(markup) == [f"{SYNASTRY_PREFIX}7", CONTACTS_ADD_SYNASTRY_CALLBACK]
 
 
 def test_confirmation_lists_every_field():

@@ -53,6 +53,9 @@ CONTACTS_DELETE_PREFIX = "contacts:del:"
 CONTACTS_OPEN_PREFIX = "contacts:open:"
 CONTACTS_EDIT_PREFIX = "contacts:edit:"
 CONTACTS_ADD_CALLBACK = "contacts:add"
+CONTACTS_ADD_SYNASTRY_CALLBACK = "contacts:add:synastry"
+CONTACTS_ADD_FORECAST_CALLBACK = "contacts:add:forecast"
+CONTACTS_ADD_CHART_CALLBACK = "contacts:add:chart"
 CONTACTS_BACK_CALLBACK = "contacts:list"
 CHART_CONTACT_PICK_CALLBACK = "chart:contact:pick"
 CHART_CONTACT_RUN_PREFIX = "chart:contact:run:"
@@ -247,8 +250,9 @@ def contact_pick_keyboard(
     callback_prefix: str,
     *,
     cancel_callback: str | None = None,
+    add_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """One button per contact, namespaced by ``callback_prefix``."""
+    """One button per contact, optional add and back actions."""
     rows = [
         [
             InlineKeyboardButton(
@@ -258,6 +262,10 @@ def contact_pick_keyboard(
         ]
         for contact in contacts
     ]
+    if add_callback:
+        rows.append(
+            [InlineKeyboardButton(text="➕ Добавить контакт", callback_data=add_callback)]
+        )
     if cancel_callback:
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=cancel_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
