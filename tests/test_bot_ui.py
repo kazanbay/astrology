@@ -98,6 +98,7 @@ def test_main_menu_has_all_buttons():
         BUTTON_SYNASTRY,
         BUTTON_HISTORY,
         BUTTON_PREMIUM,
+        BUTTON_FEEDBACK,
         BUTTON_HELP,
     ]
     assert menu.is_persistent is True
