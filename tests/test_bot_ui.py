@@ -37,6 +37,9 @@ from bot_ui import (
     FEEDBACK_PROMPT,
     FEEDBACK_SENT,
     FEEDBACK_UNAVAILABLE,
+    GLOSSARY,
+    GLOSSARY_CALLBACK,
+    HELP_CALLBACK,
     FORECAST_CONTACTS_CALLBACK,
     FORECAST_PICK_PREFIX,
     FORECAST_PROFILE_CALLBACK,
@@ -68,6 +71,8 @@ from bot_ui import (
     format_contact_saved,
     format_contacts_screen,
     format_stored_profile,
+    glossary_keyboard,
+    help_keyboard,
     main_menu,
     premium_keyboard,
     premium_upsell_keyboard,
@@ -339,11 +344,25 @@ def test_strip_ui_markdown_removes_markers_and_tags():
 
 
 def test_help_and_greeting_render_without_asterisks():
-    for text in (GREETING, HELP):
+    for text in (GREETING, HELP, GLOSSARY):
         rendered = render_ui_html(text)
         assert "<b>" in rendered
         assert "*" not in rendered
         assert "`" not in rendered
+
+
+def test_help_keyboard_and_glossary_back():
+    assert callback_data(help_keyboard()) == [GLOSSARY_CALLBACK]
+    assert callback_data(glossary_keyboard()) == [HELP_CALLBACK]
+
+
+def test_glossary_keeps_the_terms_and_help_stays_short():
+    for term in ("Стихии", "Управитель", "Орб", "Стеллиум", "Тау-квадрат", "Угловые дома"):
+        assert term in GLOSSARY
+    assert "Словарь новичка" in GLOSSARY
+    assert "Словарь новичка" not in HELP
+    assert "/glossary" in HELP
+    assert len(HELP) < len(GLOSSARY)
 
 
 def test_confirmation_lists_every_field():
@@ -411,6 +430,7 @@ def test_greeting_and_help_point_to_the_menu_and_command():
     assert "Рассчитать карту" in GREETING
     assert "/chart 1990-08-15 12:00 Москва" in GREETING
     assert "📅 Прогноз" in GREETING
+    assert "/glossary" in GREETING
     assert "История" in HELP
     assert "«Прогноз»" in HELP
     assert "«Совместимость»" in HELP

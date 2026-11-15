@@ -64,6 +64,9 @@ from bot_ui import (
     FEEDBACK_PROMPT,
     FEEDBACK_SENT,
     FEEDBACK_UNAVAILABLE,
+    GLOSSARY,
+    GLOSSARY_CALLBACK,
+    HELP_CALLBACK,
     INVITE_CALLBACK,
     PREMIUM_BUY_PREFIX,
     PREMIUM_HISTORY_CALLBACK,
@@ -88,6 +91,8 @@ from bot_ui import (
     format_contact_saved,
     format_contacts_screen,
     format_stored_profile,
+    glossary_keyboard,
+    help_keyboard,
     main_menu,
     premium_keyboard,
     premium_upsell_keyboard,
@@ -542,12 +547,29 @@ def create_dispatcher(
     @router.message(Command("help"))
     async def help_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await _send_ui(message, HELP)
+        await _send_ui(message, HELP, reply_markup=help_keyboard())
 
     @router.message(F.text == BUTTON_HELP)
     async def help_button(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await _send_ui(message, HELP)
+        await _send_ui(message, HELP, reply_markup=help_keyboard())
+
+    @router.message(Command("glossary"))
+    async def glossary_handler(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await _send_ui(message, GLOSSARY, reply_markup=glossary_keyboard())
+
+    @router.callback_query(F.data == GLOSSARY_CALLBACK)
+    async def glossary_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await _send_ui(callback.message, GLOSSARY, reply_markup=glossary_keyboard())
+
+    @router.callback_query(F.data == HELP_CALLBACK)
+    async def help_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await _send_ui(callback.message, HELP, reply_markup=help_keyboard())
 
     @router.message(F.text == BUTTON_CHART)
     async def chart_button(message: Message, state: FSMContext) -> None:
