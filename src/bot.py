@@ -700,8 +700,16 @@ def create_dispatcher(
                     "Интерпретация по книгам сейчас недоступна — показываю расчёт транзитов."
                 )
             else:
-                for part in split_message(interpretation["text"]):
-                    await message.answer(part, disable_web_page_preview=True)
+                for part in split_message(interpretation["text"], limit=REPORT_PART_LIMIT):
+                    try:
+                        await message.answer(
+                            to_telegram_html(part),
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    except TelegramBadRequest:
+                        # Never lose the report because of one unparsable character.
+                        await message.answer(part, disable_web_page_preview=True)
                 return
         for part in split_message(format_forecast_text(result)):
             await message.answer(part, disable_web_page_preview=True)
