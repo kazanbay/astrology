@@ -93,8 +93,9 @@ def serialize_forecast(
     payload: dict[str, Any] = {
         "interval": result.get("interval"),
         "period": result.get("range"),
-        "person": result.get("person"),
-        "birth": {"city": birth.get("city"), "time_unknown": birth.get("time_unknown")},
+        # Personal data (name, city) never leaves for the model: the prompt
+        # addresses the reader as «вы».
+        "birth_time_unknown": bool(birth.get("time_unknown")),
         "natal": result.get("natal"),
         "now_transits": result.get("now_transits"),
         "events": result.get("events"),

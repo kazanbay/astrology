@@ -19,9 +19,10 @@ from datetime import datetime
 from typing import Any
 
 from storage.birth import BirthData
-from storage.store import ChartStore
+from storage.hashing import generate_chart_hash
+from storage.store import ChartStore, ContactProfile, UserProfile
 
-from .forecast import default_natal_builder, default_now_provider
+from .forecast import _natal_summary, default_natal_builder, default_now_provider
 from .profiles import (
     CONTACT_PERMISSION_MESSAGE,
     PREMIUM_REQUIRED_MESSAGE,
@@ -157,6 +158,22 @@ class SynastryService:
         return {
             "tool": "synastry",
             "telegram_id": telegram,
+            "chart_hash_a": generate_chart_hash(
+                owner_birth.dt_utc,
+                owner_birth.latitude,
+                owner_birth.longitude,
+                owner_birth.house_system,
+                owner_birth.language,
+            ),
+            "chart_hash_b": generate_chart_hash(
+                contact_birth.dt_utc,
+                contact_birth.latitude,
+                contact_birth.longitude,
+                contact_birth.house_system,
+                contact_birth.language,
+            ),
+            "natal_a": _natal_summary(owner_chart),
+            "natal_b": _natal_summary(contact_chart),
             "person_a": {
                 "kind": "owner",
                 "name": owner_name,

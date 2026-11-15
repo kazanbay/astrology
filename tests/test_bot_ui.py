@@ -216,20 +216,20 @@ def test_format_contact_saved_renders_the_card():
     contact = ContactProfile(
         contact_id=1,
         user_id=1,
-        name="Дарья",
+        name="Анна",
         relation="супруга",
-        birth_date=date(1995, 4, 22),
+        birth_date=date(1990, 6, 5),
         birth_time=time(14, 30),
         birth_time_unknown=False,
         birth_timezone="Europe/Moscow",
-        birth_city="Козловка",
+        birth_city="Тула",
     )
 
     text = format_contact_saved(contact)
 
-    assert "Дарья (супруга)" in text
-    assert "22.04.1995 14:30 (Europe/Moscow)" in text
-    assert "Козловка" in text
+    assert "Анна (супруга)" in text
+    assert "05.06.1990 14:30 (Europe/Moscow)" in text
+    assert "Тула" in text
 
 
 def test_confirmation_lists_every_field():

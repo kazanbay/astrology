@@ -20,14 +20,17 @@ from zoneinfo import ZoneInfo
 
 from generator.forecast import FORECAST_PROMPT_VERSION, synthesize_forecast
 from generator.synthesizer import DEFAULT_MODEL, DEFAULT_TEMPERATURE, normalize_temperature
+from rag.router import get_relevant_chunks
 from storage.store import ChartStore, ForecastReportRecord
 
-from .presentation import forecast_query
+from .presentation import forecast_queries
 
 logger = logging.getLogger(__name__)
 
-#: Knowledge-base chunks requested per forecast interpretation.
-SEARCH_TOP_K = 6
+#: Chunks fetched per single aspect query (the router deduplicates).
+SEARCH_TOP_K = 2
+#: Upper bound of unique chunks sent to the model.
+MAX_CHUNKS = 12
 
 #: ``(forecast, chunks, model, temperature) -> text``
 ForecastSynthesizer = Callable[
@@ -47,6 +50,7 @@ class ForecastReportService:
         prompt_version: str = FORECAST_PROMPT_VERSION,
         synthesizer: ForecastSynthesizer | None = None,
         top_k: int = SEARCH_TOP_K,
+        max_chunks: int = MAX_CHUNKS,
     ) -> None:
         if not model_name or not model_name.strip():
             raise ValueError("model_name must be a non-empty string")
@@ -54,11 +58,14 @@ class ForecastReportService:
             raise ValueError("prompt_version must be a non-empty string")
         if top_k < 1:
             raise ValueError("top_k must be greater than zero")
+        if max_chunks < 1:
+            raise ValueError("max_chunks must be greater than zero")
         self.store = store
         self.model_name = model_name.strip()
         self.temperature = normalize_temperature(temperature)
         self.prompt_version = prompt_version.strip()
         self.top_k = top_k
+        self.max_chunks = max_chunks
         self._synthesize: ForecastSynthesizer = synthesizer or synthesize_forecast
 
     def report_id(self, chart_hash: str, interval: str, forecast_date: date) -> str:
@@ -115,9 +122,15 @@ class ForecastReportService:
 
         chunks: list[dict[str, Any]] = []
         if retriever is not None:
-            query = forecast_query(result)
+            queries = forecast_queries(result)
             try:
-                chunks = await asyncio.to_thread(retriever.search, query, self.top_k)
+                chunks = await asyncio.to_thread(
+                    get_relevant_chunks,
+                    queries,
+                    retriever=retriever,
+                    top_k=self.top_k,
+                    max_chunks=self.max_chunks,
+                )
             except Exception:
                 # A missing collection or a network hiccup must not cost the
                 # user the whole interpretation: the prompt is instructed to

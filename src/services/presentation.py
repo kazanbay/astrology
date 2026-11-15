@@ -156,21 +156,46 @@ def format_forecast_text(result: Mapping[str, Any], *, max_chars: int = MAX_TEXT
     return _trim("\n".join(lines), max_chars)
 
 
-def forecast_query(result: Mapping[str, Any], *, limit: int = 5) -> str:
-    """Knowledge-base search query built from the strongest transits."""
+def forecast_queries(result: Mapping[str, Any], *, limit: int = 5) -> list[str]:
+    """Narrow knowledge-base queries, one per strongest transit.
+
+    The router searches each phrase separately, so «Транзит Сатурна квадрат
+    Солнца» finds the transitology chapters better than one long sentence.
+    """
+    queries: list[str] = []
     events = result.get("events") or []
-    parts: list[str] = []
     for event in events[:limit]:
         if not isinstance(event, Mapping):
             continue
-        parts.append(
-            f"{_planet(event.get('transit'))} {_aspect(event.get('aspect'))} "
+        queries.append(
+            f"Транзит {_planet(event.get('transit'))} {_aspect(event.get('aspect'))} "
             f"{_point(event.get('natal'))}"
         )
-    interval = INTERVAL_TITLES_RU.get(str(result.get("interval") or ""), "")
-    head = f"Транзиты {interval}" if interval else "Транзиты"
-    body = "; ".join(parts) if parts else "спокойный период без точных транзитов"
-    return f"{head}: {body}. Классическая астрология, толкование транзитов"
+    if not queries:
+        interval = INTERVAL_TITLES_RU.get(str(result.get("interval") or ""), "")
+        head = f"Транзиты {interval}".strip() if interval else "Транзиты"
+        queries.append(f"{head}: спокойный период без точных транзитов")
+    queries.append("Классическая астрология Вронского, влияние транзитов")
+    return queries
+
+
+def synastry_queries(result: Mapping[str, Any], *, limit: int = 5) -> list[str]:
+    """Knowledge-base queries for a pair: luminaries, Venus/Mars, 7th house."""
+    queries: list[str] = []
+    events = result.get("events") or []
+    for event in events[:limit]:
+        if not isinstance(event, Mapping):
+            continue
+        queries.append(
+            f"Синастрия: {_planet(event.get('body_a'))} {_aspect(event.get('aspect'))} "
+            f"{_planet(event.get('body_b'))}"
+        )
+    # The classical core of compatibility, requested even when the aspect grid
+    # is short: luminaries, the Venus/Mars axis and the 7th house.
+    queries.append("Синастрия: взаимодействие Солнца и Луны с планетами партнёра")
+    queries.append("Синастрия: Венера и Марс, притяжение и конфликты")
+    queries.append("Седьмой дом гороскопа: брак, партнёрство, совместимость")
+    return queries
 
 
 def _highlight(positions: Any) -> str:

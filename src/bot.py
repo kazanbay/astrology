@@ -116,6 +116,7 @@ from services.referrals import (
     referral_link,
 )
 from services.synastry import SynastryService
+from services.synastry_report import SynastryReportService
 from storage.birth import (
     BIRTH_COMMAND_USAGE,
     BirthData,
@@ -137,6 +138,7 @@ from storage.presentation import (
     to_telegram_html,
 )
 from storage.store import PostgresChartStore
+from logging_utils import PrivacyFilter
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +192,7 @@ def create_dispatcher(
     forecast_service: ForecastService | None = None,
     forecast_report_service: ForecastReportService | None = None,
     synastry_service: SynastryService | None = None,
+    synastry_report_service: SynastryReportService | None = None,
     premium_catalog: PremiumCatalog | None = None,
     bot_username: str | None = None,
 ) -> Dispatcher:
@@ -956,10 +959,8 @@ def create_dispatcher(
                     result, retriever=retriever
                 )
             except Exception:
+                # No service messages in chat: fall back to the deterministic grid.
                 logger.exception("forecast interpretation failed")
-                await message.answer(
-                    "Интерпретация по книгам сейчас недоступна — показываю расчёт транзитов."
-                )
             else:
                 for part in split_message(interpretation["text"], limit=REPORT_PART_LIMIT):
                     try:
@@ -1016,7 +1017,7 @@ def create_dispatcher(
                 "Совместимость недоступна: не настроено подключение к PostgreSQL."
             )
             return
-        await callback.message.answer("Считаю совместимость…")
+        await callback.message.answer("Считаю совместимость и готовлю разбор…")
         try:
             result = await synastry_service.check_synastry(callback.from_user.id, contact_id)
         except ProfileError as exc:
@@ -1038,6 +1039,27 @@ def create_dispatcher(
             logger.exception("synastry request failed")
             await callback.message.answer("Не удалось проверить совместимость. Попробуйте позже.")
             return
+
+        # The reading is the product answer; the deterministic grid is only a
+        # fallback, and the user never sees a service apology in chat.
+        if synastry_report_service is not None:
+            try:
+                interpretation = await synastry_report_service.get_or_generate(
+                    result, retriever=retriever
+                )
+            except Exception:
+                logger.exception("synastry interpretation failed")
+            else:
+                for part in split_message(interpretation["text"], limit=REPORT_PART_LIMIT):
+                    try:
+                        await callback.message.answer(
+                            to_telegram_html(part),
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    except TelegramBadRequest:
+                        await callback.message.answer(part, disable_web_page_preview=True)
+                return
         for part in split_message(format_synastry_text(result)):
             await callback.message.answer(part, disable_web_page_preview=True)
 
@@ -1289,9 +1311,12 @@ def create_dispatcher(
 
 async def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
+    handler = logging.StreamHandler()
+    handler.addFilter(PrivacyFilter())
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[handler],
     )
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -1323,6 +1348,7 @@ async def main() -> None:
     forecast_service: ForecastService | None = None
     forecast_report_service: ForecastReportService | None = None
     synastry_service: SynastryService | None = None
+    synastry_report_service: SynastryReportService | None = None
     if os.getenv("DATABASE_URL", "").strip():
         try:
             store = await PostgresChartStore.connect()
@@ -1331,6 +1357,7 @@ async def main() -> None:
             forecast_service = ForecastService(store)
             forecast_report_service = ForecastReportService(store)
             synastry_service = SynastryService(store)
+            synastry_report_service = SynastryReportService(store)
         except Exception:
             logger.exception("chart storage is unavailable; /chart and /history are disabled")
             store = None
@@ -1339,6 +1366,7 @@ async def main() -> None:
             forecast_service = None
             forecast_report_service = None
             synastry_service = None
+            synastry_report_service = None
 
     dispatcher = create_dispatcher(
         retriever,
@@ -1348,6 +1376,7 @@ async def main() -> None:
         forecast_service,
         forecast_report_service,
         synastry_service,
+        synastry_report_service,
         premium_catalog,
         bot_username,
     )

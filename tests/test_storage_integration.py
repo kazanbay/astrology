@@ -13,7 +13,13 @@ from datetime import date, datetime, time, timezone
 import pytest
 
 from storage.config import resolve_database_url
-from storage.store import CachedChart, ForecastReportRecord, GenerationRecord, PostgresChartStore
+from storage.store import (
+    CachedChart,
+    ForecastReportRecord,
+    GenerationRecord,
+    PostgresChartStore,
+    SynastryReportRecord,
+)
 
 try:
     DSN: str | None = resolve_database_url()
@@ -102,12 +108,31 @@ async def _scenario() -> None:
         assert await store.get_forecast_report(forecast_id) == "Прогноз периода"
         assert await store.get_forecast_report("0" * 64) is None
 
+        # Cached LLM readings of synastry pairs.
+        synastry_id = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+        synastry_record = SynastryReportRecord(
+            report_id=synastry_id,
+            chart_hash_a=chart_hash,
+            chart_hash_b="b" * 64,
+            prompt_version="s1.0",
+            model_name="test-model",
+            temperature=0.7,
+            generated_text="Разбор пары",
+        )
+        assert await store.save_synastry_report(synastry_record) is True
+        assert await store.save_synastry_report(synastry_record) is False
+        assert await store.get_synastry_report(synastry_id) == "Разбор пары"
+        assert await store.get_synastry_report("0" * 64) is None
+
         assert await store.get_chart("0" * 64) is None
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
         await store.pool.execute(
             "DELETE FROM forecast_reports WHERE chart_hash = $1", chart_hash
+        )
+        await store.pool.execute(
+            "DELETE FROM synastry_reports WHERE chart_hash_a = $1", chart_hash
         )
         await store.pool.execute("DELETE FROM charts_cache WHERE chart_hash = $1", chart_hash)
         await store.close()

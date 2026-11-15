@@ -131,6 +131,11 @@ def test_synastry_report_shape_and_top_event():
     # Only the bodies present in the stub chart are reported.
     assert set(positions) == {"Sun", "Moon", "Venus"}
 
+    # The pair identity feeds the interpretation cache key.
+    assert len(result["chart_hash_a"]) == 64
+    assert len(result["chart_hash_b"]) == 64
+    assert result["natal_a"]["planets"]["Sun"]["sign"] == "stub"
+
 
 def test_synastry_requires_premium():
     store = FakeStore(owner_profile(is_premium=False), contacts=[contact_profile()])

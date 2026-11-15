@@ -101,9 +101,9 @@ def test_miss_retrieves_chunks_and_saves_the_report():
     assert result["cache_hit"] is False
     assert result["chunks"] == 1
     query, top_k = retriever.calls[0]
-    assert query.startswith("Транзиты на неделю:")
-    assert "Сатурн квадрат Солнце" in query
+    assert query == "Транзит Сатурн квадрат Солнце"
     assert top_k == service.top_k
+    assert retriever.calls[-1][0].startswith("Классическая астрология Вронского")
     assert synth.calls[0][1][0]["chunk_id"] == "c1"
 
     record = store.saved[0]
@@ -122,11 +122,12 @@ def test_second_call_hits_the_cache():
     service = build_service(store, synth)
 
     asyncio.run(service.get_or_generate(make_forecast(), retriever=retriever))
+    first_calls = len(retriever.calls)
     second = asyncio.run(service.get_or_generate(make_forecast(), retriever=retriever))
 
     assert second["cache_hit"] is True
     assert len(synth.calls) == 1
-    assert len(retriever.calls) == 1
+    assert len(retriever.calls) == first_calls
 
 
 def test_without_retriever_the_llm_still_gets_the_forecast():

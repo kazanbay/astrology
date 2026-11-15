@@ -100,11 +100,12 @@ def test_local_prompt_is_used_without_langfuse():
     assert '{"interval": "day"}' in messages[1]["content"]
 
 
-def test_serialize_drops_coordinates():
+def test_serialize_drops_personal_data():
     text = serialize_forecast({**FORECAST, "birth": {**FORECAST["birth"], "lat": 55.7, "lon": 37.6}})
 
     assert "55.7" not in text
-    assert "Москва" in text
+    assert "Москва" not in text
+    assert "Анна" not in text
 
 
 def test_empty_forecast_is_rejected():

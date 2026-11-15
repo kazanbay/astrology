@@ -282,6 +282,21 @@ RETURNING contact_id, user_id, name, relation, birth_date, birth_time, birth_tim
 
 DELETE_CONTACT_SQL = "DELETE FROM user_contacts WHERE contact_id = $1 AND user_id = $2"
 
+SELECT_SYNASTRY_REPORT_SQL = """
+SELECT generated_text
+  FROM synastry_reports
+ WHERE report_id = $1
+"""
+
+INSERT_SYNASTRY_REPORT_SQL = """
+INSERT INTO synastry_reports
+       (report_id, chart_hash_a, chart_hash_b, prompt_version, model_name,
+        temperature, generated_text)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (report_id) DO NOTHING
+RETURNING report_id
+"""
+
 
 @dataclass(frozen=True)
 class CachedChart:
@@ -328,6 +343,20 @@ class ForecastReportRecord:
     chart_hash: str
     interval: str
     forecast_date: date
+    prompt_version: str
+    model_name: str
+    temperature: float
+    generated_text: str
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class SynastryReportRecord:
+    """One ``synastry_reports`` row: a cached LLM reading of one pair."""
+
+    report_id: str
+    chart_hash_a: str
+    chart_hash_b: str
     prompt_version: str
     model_name: str
     temperature: float
@@ -540,6 +569,10 @@ class ChartStore(Protocol):
     async def get_forecast_report(self, report_id: str) -> str | None: ...
 
     async def save_forecast_report(self, record: ForecastReportRecord) -> bool: ...
+
+    async def get_synastry_report(self, report_id: str) -> str | None: ...
+
+    async def save_synastry_report(self, record: SynastryReportRecord) -> bool: ...
 
     async def get_user_profile(
         self, *, telegram_id: int | str | None = None, email: str | None = None
@@ -907,6 +940,36 @@ class PostgresChartStore:
             record.chart_hash,
             record.interval,
             record.forecast_date,
+            record.prompt_version,
+            record.model_name,
+            record.temperature,
+            record.generated_text,
+        )
+        return stored is not None
+
+    async def get_synastry_report(self, report_id: str) -> str | None:
+        """Return the cached synastry reading, or ``None`` on a miss."""
+        if not isinstance(report_id, str) or len(report_id) != 64:
+            raise ValueError("report_id must be a 64-character SHA-256 hex string")
+        text = await self.pool.fetchval(SELECT_SYNASTRY_REPORT_SQL, report_id)
+        return str(text) if text is not None else None
+
+    async def save_synastry_report(self, record: SynastryReportRecord) -> bool:
+        """Insert a synastry reading; ``False`` means another request won."""
+        if not isinstance(record, SynastryReportRecord):
+            raise ValueError("save_synastry_report expects a SynastryReportRecord")
+        for value, label in (
+            (record.report_id, "report_id"),
+            (record.chart_hash_a, "chart_hash_a"),
+            (record.chart_hash_b, "chart_hash_b"),
+        ):
+            if len(value) != 64:
+                raise ValueError(f"{label} must be a 64-character SHA-256 hex string")
+        stored = await self.pool.fetchval(
+            INSERT_SYNASTRY_REPORT_SQL,
+            record.report_id,
+            record.chart_hash_a,
+            record.chart_hash_b,
             record.prompt_version,
             record.model_name,
             record.temperature,

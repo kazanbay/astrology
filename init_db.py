@@ -168,6 +168,21 @@ DDL_STATEMENTS: Sequence[str] = (
     )""",
     "CREATE INDEX IF NOT EXISTS idx_forecast_reports_chart "
     "ON forecast_reports (chart_hash, forecast_date)",
+    # 3c. Cached LLM synastry readings: one row per (pair of charts, prompt
+    #     version, model). Compatibility does not depend on the day, so the
+    #     key carries no date.
+    """CREATE TABLE IF NOT EXISTS synastry_reports (
+        report_id VARCHAR(64) PRIMARY KEY,
+        chart_hash_a VARCHAR(64) NOT NULL,
+        chart_hash_b VARCHAR(64) NOT NULL,
+        prompt_version VARCHAR(255) NOT NULL,
+        model_name VARCHAR(128) NOT NULL,
+        temperature NUMERIC(3, 2) NOT NULL,
+        generated_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_synastry_reports_pair "
+    "ON synastry_reports (chart_hash_a, chart_hash_b)",
     # 4. Per-user request history: many profiles per user, one chart hash each.
     """CREATE TABLE IF NOT EXISTS user_chart_requests (
         request_id SERIAL PRIMARY KEY,

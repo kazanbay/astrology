@@ -107,14 +107,14 @@ ASK_PLACE = (
 
 CONFIRM_PROMPT = "Проверьте данные перед расчётом:"
 
-CONTACT_WIZARD_ASK_NAME = "Шаг 1 из 5. Как зовут человека?\n\nНапример: Дарья"
+CONTACT_WIZARD_ASK_NAME = "Шаг 1 из 5. Как зовут человека?\n\nНапример: Анна"
 
 CONTACT_WIZARD_ASK_RELATION = (
     "Шаг 2 из 5. Кто это для вас?\n\n"
     "Например: супруга, друг, коллега. Можно пропустить."
 )
 
-CONTACT_WIZARD_ASK_DATE = "Шаг 3 из 5. Дата рождения?\n\nНапример: 22.04.1995"
+CONTACT_WIZARD_ASK_DATE = "Шаг 3 из 5. Дата рождения?\n\nНапример: 05.06.1990"
 
 CONTACT_WIZARD_ASK_TIME = (
     "Шаг 4 из 5. Время рождения?\n\n"
@@ -122,7 +122,7 @@ CONTACT_WIZARD_ASK_TIME = (
     "Если неизвестно — нажмите кнопку ниже."
 )
 
-CONTACT_WIZARD_ASK_PLACE = "Шаг 5 из 5. Город рождения?\n\nНапример: Козловка"
+CONTACT_WIZARD_ASK_PLACE = "Шаг 5 из 5. Город рождения?\n\nНапример: Тула"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
