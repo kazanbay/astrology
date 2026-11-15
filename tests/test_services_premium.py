@@ -101,7 +101,7 @@ def test_invite_text_mentions_reward_and_stats():
 
     assert "https://t.me/bot?start=ref_x" in text
     assert "1 мес" in text
-    assert "Приглашено: 2" in text
+    assert "приглашено: 2" in text
     assert "2 мес" in text
 
 

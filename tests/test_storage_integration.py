@@ -251,6 +251,39 @@ async def _profile_contacts_scenario() -> None:
         assert [item.name for item in remaining] == ["Пётр"]
         assert await store.get_contact(contact.contact_id, user_id=user_id) is None
 
+        # Contacts are editable, and only by their owner.
+        assert await store.update_contact(
+            remaining[0].contact_id,
+            user_id,
+            ContactInput(
+                name="Пётр Иванович",
+                relation="коллега",
+                birth_date=date(1985, 11, 2),
+                birth_time=time(9, 0),
+                birth_time_unknown=False,
+                birth_lat=59.94,
+                birth_lon=30.31,
+                birth_timezone="Europe/Moscow",
+                birth_city="Санкт-Петербург",
+            ),
+        ) is True
+        edited = await store.get_contact(remaining[0].contact_id, user_id=user_id)
+        assert edited is not None
+        assert edited.name == "Пётр Иванович"
+        assert edited.relation == "коллега"
+        assert edited.birth_time == time(9, 0)
+        assert await store.update_contact(
+            remaining[0].contact_id,
+            other_id,
+            ContactInput(
+                name="Чужой",
+                birth_date=date(1985, 11, 2),
+                birth_lat=1.0,
+                birth_lon=1.0,
+                birth_timezone="UTC",
+            ),
+        ) is False
+
         # The save path of the service layer (bot flow) writes the same columns;
         # identical data is reported as unchanged and spends no change.
         profile_before = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)

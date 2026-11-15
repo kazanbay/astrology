@@ -403,6 +403,17 @@ async def create_contact_from_command(
     timezone_name: str,
 ) -> ContactProfile:
     """Store one contact from a parsed ``/contact`` command (geo + zone resolved)."""
+    return await store.add_contact(
+        user_id, contact_input_from_command(parsed, geo, timezone_name)
+    )
+
+
+def contact_input_from_command(
+    parsed: ContactCommandInput,
+    geo: dict[str, Any],
+    timezone_name: str,
+) -> ContactInput:
+    """Turn a parsed command plus resolved geo into a validated contact payload."""
     moment_local = datetime.combine(parsed.birth_date, parsed.birth_time or DEFAULT_TIME)
     utc, _offset, _notes = local_to_utc(moment_local, timezone_name)
     birth = BirthData(
@@ -415,17 +426,14 @@ async def create_contact_from_command(
         timezone=timezone_name,
         datetime_local=moment_local.isoformat(),
     )
-    return await store.add_contact(
-        user_id,
-        ContactInput(
-            name=parsed.name,
-            relation=parsed.relation,
-            birth_date=parsed.birth_date,
-            birth_time=parsed.birth_time,
-            birth_time_unknown=parsed.time_unknown,
-            birth_lat=birth.latitude,
-            birth_lon=birth.longitude,
-            birth_timezone=timezone_name,
-            birth_city=birth.city,
-        ),
+    return ContactInput(
+        name=parsed.name,
+        relation=parsed.relation,
+        birth_date=parsed.birth_date,
+        birth_time=parsed.birth_time,
+        birth_time_unknown=parsed.time_unknown,
+        birth_lat=birth.latitude,
+        birth_lon=birth.longitude,
+        birth_timezone=timezone_name,
+        birth_city=birth.city,
     )

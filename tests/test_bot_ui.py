@@ -9,13 +9,19 @@ from bot_ui import (
     ASK_PLACE,
     ASK_TIME,
     BUTTON_CHART,
+    BUTTON_CONTACTS,
     BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
     BUTTON_PREMIUM,
     BUTTON_SYNASTRY,
+    CHART_CONTACT_PICK_CALLBACK,
     CONFIRM_CALLBACK,
+    CONTACTS_ADD_CALLBACK,
+    CONTACTS_BACK_CALLBACK,
     CONTACTS_DELETE_PREFIX,
+    CONTACTS_EDIT_PREFIX,
+    CONTACTS_OPEN_PREFIX,
     CONTACT_SKIP_RELATION_CALLBACK,
     CONTACT_UNKNOWN_TIME_CALLBACK,
     CONTACT_WIZARD_ASK_DATE,
@@ -34,6 +40,7 @@ from bot_ui import (
     INVITE_CALLBACK,
     PREMIUM_BUY_PREFIX,
     PREMIUM_HISTORY_CALLBACK,
+    PREMIUM_MENU_CALLBACK,
     PROFILE_CONFIRM_CALLBACK,
     PROFILE_EDIT_CALLBACK,
     SKIP_NAME_CALLBACK,
@@ -41,17 +48,22 @@ from bot_ui import (
     UNKNOWN_TIME_CALLBACK,
     build_birth_data,
     confirm_keyboard,
+    contact_card_keyboard,
     contact_pick_keyboard,
     contact_relation_keyboard,
     contact_time_keyboard,
     contacts_delete_keyboard,
+    contacts_list_keyboard,
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_contact_card,
     format_contact_saved,
+    format_contacts_screen,
     format_stored_profile,
     main_menu,
     premium_keyboard,
+    premium_upsell_keyboard,
     profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
@@ -77,6 +89,7 @@ def test_main_menu_has_all_buttons():
     assert button_texts(menu) == [
         BUTTON_CHART,
         BUTTON_FORECAST,
+        BUTTON_CONTACTS,
         BUTTON_SYNASTRY,
         BUTTON_HISTORY,
         BUTTON_PREMIUM,
@@ -122,8 +135,13 @@ def test_profile_confirm_keyboard_reuses_the_card_layout():
     assert [button.text for row in markup.inline_keyboard for button in row] == [
         "✅ Рассчитать",
         "✏️ Изменить данные",
+        "👥 Рассчитать контакту",
     ]
-    assert callback_data(markup) == [PROFILE_CONFIRM_CALLBACK, PROFILE_EDIT_CALLBACK]
+    assert callback_data(markup) == [
+        PROFILE_CONFIRM_CALLBACK,
+        PROFILE_EDIT_CALLBACK,
+        CHART_CONTACT_PICK_CALLBACK,
+    ]
 
 
 def test_format_stored_profile_renders_saved_data_and_note():
@@ -230,6 +248,59 @@ def test_format_contact_saved_renders_the_card():
     assert "Анна (супруга)" in text
     assert "05.06.1990 14:30 (Europe/Moscow)" in text
     assert "Тула" in text
+
+
+def test_contacts_keyboards_and_screens():
+    contacts = [contact("Анна", "супруга", 7)]
+
+    list_markup = contacts_list_keyboard(contacts)
+    assert [button.text for row in list_markup.inline_keyboard for button in row] == [
+        "Анна (супруга)",
+        "➕ Добавить контакт",
+    ]
+    assert callback_data(list_markup) == [
+        f"{CONTACTS_OPEN_PREFIX}7",
+        CONTACTS_ADD_CALLBACK,
+    ]
+
+    card_markup = contact_card_keyboard(7)
+    assert callback_data(card_markup) == [
+        f"{CONTACTS_EDIT_PREFIX}7",
+        f"{CONTACTS_DELETE_PREFIX}7",
+        CONTACTS_BACK_CALLBACK,
+    ]
+
+    assert "Контактов пока нет" in format_contacts_screen([])
+    assert "Нажмите на контакт" in format_contacts_screen(contacts)
+
+
+def test_format_contact_card_lists_birth_data():
+    stored = ContactProfile(
+        contact_id=1,
+        user_id=1,
+        name="Анна",
+        relation="супруга",
+        birth_date=date(1990, 6, 5),
+        birth_time=time(14, 30),
+        birth_timezone="Europe/Moscow",
+        birth_city="Тула",
+    )
+
+    text = format_contact_card(stored)
+
+    assert "Анна (супруга)" in text
+    assert "05.06.1990" in text and "14:30" in text
+    assert "Тула" in text
+
+
+def test_premium_upsell_offers_buy_and_invite():
+    markup = premium_upsell_keyboard()
+
+    assert [button.text for row in markup.inline_keyboard for button in row] == [
+        "👑 Оформить премиум",
+        "🔗 Пригласить друга",
+    ]
+    assert callback_data(markup) == [PREMIUM_MENU_CALLBACK, INVITE_CALLBACK]
 
 
 def test_confirmation_lists_every_field():

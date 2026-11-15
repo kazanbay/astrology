@@ -25,12 +25,20 @@ from bot_ui import (
     ASK_PLACE,
     ASK_TIME,
     BUTTON_CHART,
+    BUTTON_CONTACTS,
     BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
     BUTTON_PREMIUM,
     BUTTON_SYNASTRY,
+    CHART_CONTACT_PICK_CALLBACK,
+    CHART_CONTACT_RUN_PREFIX,
+    CHART_SELF_CARD_CALLBACK,
+    CONTACTS_ADD_CALLBACK,
+    CONTACTS_BACK_CALLBACK,
     CONTACTS_DELETE_PREFIX,
+    CONTACTS_EDIT_PREFIX,
+    CONTACTS_OPEN_PREFIX,
     CONTACT_SKIP_RELATION_CALLBACK,
     CONTACT_UNKNOWN_TIME_CALLBACK,
     CONTACT_WIZARD_ASK_DATE,
@@ -58,17 +66,22 @@ from bot_ui import (
     UNKNOWN_TIME_CALLBACK,
     build_birth_data,
     confirm_keyboard,
+    contact_card_keyboard,
     contact_pick_keyboard,
     contact_relation_keyboard,
     contact_time_keyboard,
     contacts_delete_keyboard,
+    contacts_list_keyboard,
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_contact_card,
     format_contact_saved,
+    format_contacts_screen,
     format_stored_profile,
     main_menu,
     premium_keyboard,
+    premium_upsell_keyboard,
     profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
@@ -100,6 +113,7 @@ from services.profiles import (
     ProfileChangeLimitError,
     ProfileError,
     birth_data_from_profile,
+    contact_input_from_command,
     create_contact_from_command,
     ensure_birth_change_allowed,
     has_premium,
@@ -300,25 +314,33 @@ def create_dispatcher(
         *,
         display_name: str | None = None,
         time_unknown: bool = False,
+        profile_name: str = "Я",
+        save_profile: bool = True,
     ) -> bool:
-        """Run the chart pipeline, send the summary and the LLM report."""
+        """Run the chart pipeline, send the summary and the LLM report.
+
+        ``save_profile=False`` computes a contact's chart: the owner's stored
+        natal profile and the monthly change limit stay untouched, and the
+        history row is labelled with the contact's name.
+        """
         if chart_pipeline is None:
             await message.answer("Расчёт карты недоступен: не настроено подключение к PostgreSQL.")
             return False
 
         profile = None
-        try:
-            profile = await chart_pipeline.store.get_user_profile(telegram_id=user.id)
-        except Exception:
-            logger.exception("profile lookup failed")
-        if profile is not None:
-            # Fail fast before the expensive calculation: the monthly change
-            # limit protects the profile (and the LLM budget) from churn.
+        if save_profile:
             try:
-                ensure_birth_change_allowed(profile, birth, time_unknown=time_unknown)
-            except ProfileChangeLimitError as exc:
-                await message.answer(str(exc), reply_markup=main_menu())
-                return False
+                profile = await chart_pipeline.store.get_user_profile(telegram_id=user.id)
+            except Exception:
+                logger.exception("profile lookup failed")
+            if profile is not None:
+                # Fail fast before the expensive calculation: the monthly change
+                # limit protects the profile (and the LLM budget) from churn.
+                try:
+                    ensure_birth_change_allowed(profile, birth, time_unknown=time_unknown)
+                except ProfileChangeLimitError as exc:
+                    await message.answer(str(exc), reply_markup=main_menu())
+                    return False
 
         await message.answer(
             "Считаю карту и подбираю разделы из книг…\n"
@@ -331,6 +353,7 @@ def create_dispatcher(
                 first_name=user.first_name,
                 last_name=user.last_name,
                 display_name=display_name,
+                profile_name=profile_name,
             )
         except BirthInputError as exc:
             await message.answer(f"Не удалось рассчитать карту: {exc}")
@@ -345,18 +368,19 @@ def create_dispatcher(
 
         # The forecast tools read birth data from the stored profile only, so
         # every successful chart request refreshes the owner's natal profile.
-        try:
-            await save_owner_profile(
-                chart_pipeline.store,
-                result.user_id,
-                birth,
-                time_unknown=time_unknown,
-                profile=profile,
-            )
-        except ProfileChangeLimitError as exc:
-            await message.answer(str(exc))
-        except Exception:
-            logger.exception("owner natal profile save failed")
+        if save_profile:
+            try:
+                await save_owner_profile(
+                    chart_pipeline.store,
+                    result.user_id,
+                    birth,
+                    time_unknown=time_unknown,
+                    profile=profile,
+                )
+            except ProfileChangeLimitError as exc:
+                await message.answer(str(exc))
+            except Exception:
+                logger.exception("owner natal profile save failed")
 
         summary = format_chart_reply(result, technical=False)
         if time_unknown:
@@ -671,6 +695,7 @@ def create_dispatcher(
             [
                 format_premium_status(profile),
                 "Премиум даёт: прогнозы для контактов, синастрию и персональные разборы.",
+                "🎁 Пригласите друга — и получите месяц премиума бесплатно (/invite).",
                 "Выберите срок — оплата звёздами Telegram:",
             ]
         )
@@ -1063,24 +1088,192 @@ def create_dispatcher(
         for part in split_message(format_synastry_text(result)):
             await callback.message.answer(part, disable_web_page_preview=True)
 
-    @router.message(Command("contacts"))
-    async def contacts_command(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        if not services_ready():
+    @router.callback_query(F.data == CHART_CONTACT_PICK_CALLBACK)
+    async def chart_contact_pick(callback: CallbackQuery) -> None:
+        """Choose whose chart to compute: the owner's or a contact's."""
+        await callback.answer()
+        if chart_pipeline is None or premium_catalog is None:
+            await _show_inline(
+                callback, "Расчёт карты недоступен: не настроено подключение к PostgreSQL.", None
+            )
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        if not has_premium(profile, callback.from_user.id):
+            # Two ways to unlock: buy a term with Stars or invite a friend.
+            await _show_inline(callback, PREMIUM_REQUIRED_MESSAGE, premium_upsell_keyboard())
+            return
+        contacts = await chart_pipeline.store.list_contacts(profile.user_id)
+        if not contacts:
+            await _show_inline(
+                callback, format_contacts_screen([]), contacts_list_keyboard([])
+            )
+            return
+        await _show_inline(
+            callback,
+            "Кому рассчитать карту?",
+            contact_pick_keyboard(
+                contacts, CHART_CONTACT_RUN_PREFIX, cancel_callback=CHART_SELF_CARD_CALLBACK
+            ),
+        )
+
+    @router.callback_query(F.data.startswith(CHART_CONTACT_RUN_PREFIX))
+    async def chart_contact_run(callback: CallbackQuery) -> None:
+        raw = callback.data[len(CHART_CONTACT_RUN_PREFIX):]
+        await callback.answer()
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            contact_id = int(raw)
+        except ValueError:
+            await callback.message.answer("Не удалось определить контакт.")
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await callback.message.answer(str(exc))
+            return
+        if not has_premium(profile, callback.from_user.id):
+            await callback.message.answer(
+                PREMIUM_REQUIRED_MESSAGE, reply_markup=premium_upsell_keyboard()
+            )
+            return
+        contact = await chart_pipeline.store.get_contact(contact_id, profile.user_id)
+        if contact is None:
+            await callback.message.answer("Контакт не найден.")
+            return
+        try:
+            birth = birth_data_from_profile(contact)
+        except (ProfileError, BirthInputError) as exc:
+            await callback.message.answer(f"Данные контакта неполны: {exc}")
+            return
+        await _drop_markup(callback.message)
+        await run_chart(
+            callback.message,
+            callback.from_user,
+            birth,
+            time_unknown=contact.birth_time_unknown,
+            profile_name=contact.name,
+            save_profile=False,
+        )
+
+    @router.callback_query(F.data == CHART_SELF_CARD_CALLBACK)
+    async def chart_self_card(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if chart_pipeline is None:
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        await _show_inline(
+            callback,
+            format_stored_profile(profile, note=profile_changes_note(profile)),
+            profile_confirm_keyboard(),
+        )
+
+    async def show_contacts(message: Message) -> None:
+        if chart_pipeline is None:
             await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
             return
         user = message.from_user
         if user is None:
-            await message.answer("Не удалось определить пользователя Telegram.")
             return
         contacts, error_text = await _pick_contacts(user.id, require_premium=False)
         if error_text:
             await message.answer(error_text)
             return
         await message.answer(
-            format_contacts_list([contact.to_dict() for contact in contacts]),
-            reply_markup=contacts_delete_keyboard(contacts),
+            format_contacts_screen(contacts), reply_markup=contacts_list_keyboard(contacts)
         )
+
+    @router.message(Command("contacts"))
+    @router.message(F.text == BUTTON_CONTACTS)
+    async def contacts_command(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await show_contacts(message)
+
+    @router.callback_query(F.data == CONTACTS_BACK_CALLBACK)
+    async def contacts_back(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        contacts = await chart_pipeline.store.list_contacts(profile.user_id)
+        await _show_inline(
+            callback, format_contacts_screen(contacts), contacts_list_keyboard(contacts)
+        )
+
+    @router.callback_query(F.data.startswith(CONTACTS_OPEN_PREFIX))
+    async def contacts_open(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            contact_id = int(callback.data[len(CONTACTS_OPEN_PREFIX):])
+        except ValueError:
+            await _show_inline(callback, "Не удалось определить контакт.", None)
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        contact = await chart_pipeline.store.get_contact(contact_id, profile.user_id)
+        if contact is None:
+            await _show_inline(callback, "Контакт не найден.", contacts_list_keyboard([]))
+            return
+        await _show_inline(
+            callback, format_contact_card(contact), contact_card_keyboard(contact.contact_id)
+        )
+
+    @router.callback_query(F.data == CONTACTS_ADD_CALLBACK)
+    async def contacts_add(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if callback.message is not None:
+            await start_contact_wizard(callback.message, state)
+
+    @router.callback_query(F.data.startswith(CONTACTS_EDIT_PREFIX))
+    async def contacts_edit(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            contact_id = int(callback.data[len(CONTACTS_EDIT_PREFIX):])
+        except ValueError:
+            await callback.message.answer("Не удалось определить контакт.")
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await callback.message.answer(str(exc))
+            return
+        contact = await chart_pipeline.store.get_contact(contact_id, profile.user_id)
+        if contact is None:
+            await callback.message.answer("Контакт не найден.")
+            return
+        await _drop_markup(callback.message)
+        await start_contact_wizard(callback.message, state, contact=contact)
 
     @router.callback_query(F.data.startswith(CONTACTS_DELETE_PREFIX))
     async def contacts_delete(callback: CallbackQuery) -> None:
@@ -1102,13 +1295,15 @@ def create_dispatcher(
             return
         deleted = await chart_pipeline.store.delete_contact(contact_id, profile.user_id)
         contacts = await chart_pipeline.store.list_contacts(profile.user_id)
-        text = format_contacts_list([contact.to_dict() for contact in contacts])
+        text = format_contacts_screen(contacts)
         if not deleted:
             text = "Контакт не найден.\n\n" + text
-        await _show_inline(callback, text, contacts_delete_keyboard(contacts))
+        await _show_inline(callback, text, contacts_list_keyboard(contacts))
 
-    async def start_contact_wizard(message: Message, state: FSMContext) -> None:
-        """Step-by-step contact entry: no pipe syntax to memorise."""
+    async def start_contact_wizard(
+        message: Message, state: FSMContext, *, contact: Any = None
+    ) -> None:
+        """Step-by-step contact entry; ``contact`` switches to edit mode."""
         await state.clear()
         if chart_pipeline is None or premium_catalog is None:
             await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
@@ -1125,8 +1320,16 @@ def create_dispatcher(
             await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=main_menu())
             return
         await state.update_data(contact_owner_id=profile.user_id)
+        if contact is not None:
+            await state.update_data(contact_edit_id=contact.contact_id)
         await state.set_state(ContactForm.name)
-        await message.answer(CONTACT_WIZARD_ASK_NAME)
+        if contact is not None:
+            await message.answer(
+                f"✏️ Изменяем контакт «{contact.name}». Заполните данные заново.\n\n"
+                f"{CONTACT_WIZARD_ASK_NAME}"
+            )
+        else:
+            await message.answer(CONTACT_WIZARD_ASK_NAME)
 
     @router.message(ContactForm.name)
     async def contact_name_step(message: Message, state: FSMContext) -> None:
@@ -1221,10 +1424,31 @@ def create_dispatcher(
         try:
             geo = await asyncio.to_thread(geocode_city, city, timeout=GEO_TIMEOUT)
             tz_name = await asyncio.to_thread(detect_timezone, geo["lat"], geo["lon"])
-            contact = await create_contact_from_command(
-                chart_pipeline.store, owner_id, parsed, geo, tz_name
-            )
-        except BirthInputError as exc:
+            contact_input = contact_input_from_command(parsed, geo, tz_name)
+            edit_id = data.get("contact_edit_id")
+            if edit_id:
+                updated = await chart_pipeline.store.update_contact(
+                    int(edit_id), owner_id, contact_input
+                )
+                contact = None
+                if updated:
+                    contact = await chart_pipeline.store.get_contact(
+                        int(edit_id), owner_id
+                    )
+                if contact is None:
+                    await state.clear()
+                    await message.answer(
+                        "Контакт не найден — возможно, он удалён. Начните заново: /contact"
+                    )
+                    return
+                await state.clear()
+                await message.answer(
+                    "✏️ Контакт обновлён.\n\n" + format_contact_saved(contact),
+                    reply_markup=main_menu(),
+                )
+                return
+            contact = await chart_pipeline.store.add_contact(owner_id, contact_input)
+        except (BirthInputError, ValueError) as exc:
             await message.answer(f"Не удалось сохранить контакт: {exc}")
             return
         except Exception:

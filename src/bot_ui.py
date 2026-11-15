@@ -22,6 +22,7 @@ from storage.birth import BirthData, local_to_utc
 BUTTON_CHART = "🔮 Рассчитать карту"
 BUTTON_FORECAST = "📅 Прогноз"
 BUTTON_SYNASTRY = "💞 Совместимость"
+BUTTON_CONTACTS = "👥 Мои контакты"
 BUTTON_PREMIUM = "👑 Премиум"
 BUTTON_HISTORY = "🕘 История"
 BUTTON_HELP = "❓ Помощь"
@@ -48,6 +49,13 @@ FORECAST_PICK_PREFIX = "forecast:pick:"
 FORECAST_RUN_PREFIX = "forecast:run:"
 SYNASTRY_PREFIX = "synastry:run:"
 CONTACTS_DELETE_PREFIX = "contacts:del:"
+CONTACTS_OPEN_PREFIX = "contacts:open:"
+CONTACTS_EDIT_PREFIX = "contacts:edit:"
+CONTACTS_ADD_CALLBACK = "contacts:add"
+CONTACTS_BACK_CALLBACK = "contacts:list"
+CHART_CONTACT_PICK_CALLBACK = "chart:contact:pick"
+CHART_CONTACT_RUN_PREFIX = "chart:contact:run:"
+CHART_SELF_CARD_CALLBACK = "chart:self"
 
 #: Forecast intervals of the TZ: day, week, month, year.
 INTERVAL_BUTTONS: tuple[tuple[str, str], ...] = (
@@ -69,9 +77,10 @@ GREETING = (
 
 HELP = (
     "Что я умею:\n\n"
-    "🔮 «Рассчитать карту» — пошаговый ввод данных рождения и разбор карты.\n"
+    "🔮 «Рассчитать карту» — разбор себе или контакту (премиум).\n"
     "📅 «Прогноз» — транзиты на день, неделю, месяц или год по вашему профилю.\n"
     "💞 «Совместимость» — синастрия с человеком из вашего списка (премиум).\n"
+    "👥 «Мои контакты» — карточки людей: редактирование и удаление.\n"
     "👑 «Премиум» — подписка за звёзды Telegram: 1, 3, 6, 12 или 24 месяца.\n"
     "🕘 «История» — ваши прошлые запросы.\n"
     "💬 Любой вопрос текстом — поиск ответа по книгам.\n\n"
@@ -130,8 +139,9 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BUTTON_CHART), KeyboardButton(text=BUTTON_FORECAST)],
-            [KeyboardButton(text=BUTTON_SYNASTRY), KeyboardButton(text=BUTTON_HISTORY)],
-            [KeyboardButton(text=BUTTON_PREMIUM), KeyboardButton(text=BUTTON_HELP)],
+            [KeyboardButton(text=BUTTON_CONTACTS), KeyboardButton(text=BUTTON_SYNASTRY)],
+            [KeyboardButton(text=BUTTON_HISTORY), KeyboardButton(text=BUTTON_PREMIUM)],
+            [KeyboardButton(text=BUTTON_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -180,11 +190,16 @@ def confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def profile_confirm_keyboard() -> InlineKeyboardMarkup:
-    """Card of the stored profile: recalculate or open the wizard."""
+    """Card of the stored profile: recalculate, edit or calculate for a contact."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Рассчитать", callback_data=PROFILE_CONFIRM_CALLBACK)],
             [InlineKeyboardButton(text="✏️ Изменить данные", callback_data=PROFILE_EDIT_CALLBACK)],
+            [
+                InlineKeyboardButton(
+                    text="👥 Рассчитать контакту", callback_data=CHART_CONTACT_PICK_CALLBACK
+                )
+            ],
         ]
     )
 
@@ -263,6 +278,79 @@ def contact_time_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Не знаю время", callback_data=CONTACT_UNKNOWN_TIME_CALLBACK)]
         ]
+    )
+
+
+def contact_card_keyboard(contact_id: int) -> InlineKeyboardMarkup:
+    """Actions of one contact card."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✏️ Изменить", callback_data=f"{CONTACTS_EDIT_PREFIX}{contact_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить", callback_data=f"{CONTACTS_DELETE_PREFIX}{contact_id}"
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ К списку", callback_data=CONTACTS_BACK_CALLBACK)],
+        ]
+    )
+
+
+def contacts_list_keyboard(contacts: Iterable[Any]) -> InlineKeyboardMarkup:
+    """One button per contact plus the add action."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=contact.name + (f" ({contact.relation})" if contact.relation else ""),
+                callback_data=f"{CONTACTS_OPEN_PREFIX}{contact.contact_id}",
+            )
+        ]
+        for contact in contacts
+    ]
+    rows.append(
+        [InlineKeyboardButton(text="➕ Добавить контакт", callback_data=CONTACTS_ADD_CALLBACK)]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def premium_upsell_keyboard() -> InlineKeyboardMarkup:
+    """Both premium paths: buy with Stars or invite a friend for a free month."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👑 Оформить премиум", callback_data=PREMIUM_MENU_CALLBACK)],
+            [InlineKeyboardButton(text="🔗 Пригласить друга", callback_data=INVITE_CALLBACK)],
+        ]
+    )
+
+
+def format_contact_card(contact: Any) -> str:
+    """Detail card of one stored contact."""
+    relation = f" ({contact.relation})" if contact.relation else ""
+    time_text = (
+        "неизвестно" if contact.birth_time is None else contact.birth_time.strftime("%H:%M")
+    )
+    zone = f" ({contact.birth_timezone})" if contact.birth_timezone else ""
+    return (
+        f"👤 {contact.name}{relation}\n"
+        f"📅 {contact.birth_date.strftime('%d.%m.%Y')} · 🕐 {time_text}{zone}\n"
+        f"📍 {contact.birth_city or '—'}"
+    )
+
+
+def format_contacts_screen(contacts: Iterable[Any]) -> str:
+    """Header of the contacts screen; the contacts themselves are buttons."""
+    if not list(contacts):
+        return (
+            "👥 Контактов пока нет.\n\n"
+            "Добавьте человека: /contact — мастер спросит имя, дату, время и место рождения."
+        )
+    return (
+        "👥 Ваши контакты\n\n"
+        "Нажмите на контакт, чтобы открыть карточку: изменить данные или удалить."
     )
 
 

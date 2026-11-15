@@ -282,6 +282,14 @@ RETURNING contact_id, user_id, name, relation, birth_date, birth_time, birth_tim
 
 DELETE_CONTACT_SQL = "DELETE FROM user_contacts WHERE contact_id = $1 AND user_id = $2"
 
+UPDATE_CONTACT_SQL = """
+UPDATE user_contacts
+   SET name = $3, relation = $4, birth_date = $5, birth_time = $6,
+       birth_time_unknown = $7, birth_lat = $8, birth_lon = $9,
+       birth_timezone = $10, birth_city = $11
+ WHERE contact_id = $1 AND user_id = $2
+"""
+
 SELECT_SYNASTRY_REPORT_SQL = """
 SELECT generated_text
   FROM synastry_reports
@@ -596,6 +604,10 @@ class ChartStore(Protocol):
     async def add_contact(self, user_id: int, contact: ContactInput) -> ContactProfile: ...
 
     async def delete_contact(self, contact_id: int, user_id: int) -> bool: ...
+
+    async def update_contact(
+        self, contact_id: int, user_id: int, contact: ContactInput
+    ) -> bool: ...
 
     async def grant_premium(
         self,
@@ -1091,6 +1103,34 @@ class PostgresChartStore:
     async def delete_contact(self, contact_id: int, user_id: int) -> bool:
         """Delete a contact of this user; ``False`` when there was nothing to delete."""
         status = await self.pool.execute(DELETE_CONTACT_SQL, int(contact_id), int(user_id))
+        return status.endswith(" 1")
+
+    async def update_contact(
+        self, contact_id: int, user_id: int, contact: ContactInput
+    ) -> bool:
+        """Rewrite a contact of this user; ``False`` when it does not exist."""
+        name = _contact_name(contact.name)
+        relation = _contact_relation(contact.relation)
+        if contact.birth_date is None:
+            raise ValueError("a contact needs a birth date")
+        if contact.birth_lat is None or contact.birth_lon is None:
+            raise ValueError("a contact needs birth coordinates")
+        if not contact.birth_timezone:
+            raise ValueError("a contact needs a birth time zone")
+        status = await self.pool.execute(
+            UPDATE_CONTACT_SQL,
+            int(contact_id),
+            int(user_id),
+            name,
+            relation,
+            contact.birth_date,
+            contact.birth_time,
+            bool(contact.birth_time_unknown),
+            float(contact.birth_lat),
+            float(contact.birth_lon),
+            str(contact.birth_timezone),
+            _contact_city(contact.birth_city),
+        )
         return status.endswith(" 1")
 
     async def grant_premium(

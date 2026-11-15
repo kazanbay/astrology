@@ -13,6 +13,7 @@ from services.profiles import (
     ProfileError,
     birth_data_from_profile,
     changes_used_this_month,
+    contact_input_from_command,
     ensure_birth_change_allowed,
     has_premium,
     natal_data_present,
@@ -252,6 +253,20 @@ def test_parse_contact_command_rejects_bad_input():
 
 def test_usage_hint_is_stable():
     assert CONTACT_COMMAND_USAGE == "/contact Мария | супруга | 15.03.1992 14:30 | Казань"
+
+
+def test_contact_input_from_command_builds_the_payload():
+    parsed = parse_contact_command("Анна | супруга | 05.06.1990 14:30 | Тула")
+
+    payload = contact_input_from_command(
+        parsed, {"lat": 54.19, "lon": 37.62, "display_name": "Тула, Россия"}, "Europe/Moscow"
+    )
+
+    assert payload.name == "Анна"
+    assert payload.birth_city == "Тула, Россия"
+    assert payload.birth_lat == 54.19 and payload.birth_lon == 37.62
+    assert payload.birth_time == time(14, 30)
+    assert payload.birth_timezone == "Europe/Moscow"
 
 
 def test_unchanged_profile_spends_no_change():
