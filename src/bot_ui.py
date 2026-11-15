@@ -34,6 +34,9 @@ EDIT_CALLBACK = "wizard:edit"
 PROFILE_CONFIRM_CALLBACK = "profile:confirm"
 PROFILE_EDIT_CALLBACK = "profile:edit"
 
+CONTACT_SKIP_RELATION_CALLBACK = "contact:skip_relation"
+CONTACT_UNKNOWN_TIME_CALLBACK = "contact:unknown_time"
+
 FORECAST_PROFILE_CALLBACK = "forecast:profile"
 PREMIUM_MENU_CALLBACK = "premium:menu"
 PREMIUM_BUY_PREFIX = "premium:buy:"
@@ -73,7 +76,8 @@ HELP = (
     "🕘 «История» — ваши прошлые запросы.\n"
     "💬 Любой вопрос текстом — поиск ответа по книгам.\n\n"
     "Контакты для прогнозов и совместимости:\n"
-    "/contact Мария | супруга | 15.03.1992 14:30 | Казань\n"
+    "/contact — мастер добавления (или одной строкой:\n"
+    "/contact Мария | супруга | 15.03.1992 14:30 | Казань)\n"
     "/contacts — список и удаление.\n"
     "Приглашение друга: /invite — за каждого нового пользователя +1 мес. премиума.\n\n"
     "Быстрый расчёт одной командой:\n"
@@ -102,6 +106,23 @@ ASK_PLACE = (
 )
 
 CONFIRM_PROMPT = "Проверьте данные перед расчётом:"
+
+CONTACT_WIZARD_ASK_NAME = "Шаг 1 из 5. Как зовут человека?\n\nНапример: Дарья"
+
+CONTACT_WIZARD_ASK_RELATION = (
+    "Шаг 2 из 5. Кто это для вас?\n\n"
+    "Например: супруга, друг, коллега. Можно пропустить."
+)
+
+CONTACT_WIZARD_ASK_DATE = "Шаг 3 из 5. Дата рождения?\n\nНапример: 22.04.1995"
+
+CONTACT_WIZARD_ASK_TIME = (
+    "Шаг 4 из 5. Время рождения?\n\n"
+    "Например: 14:30. Время местное, по часам места рождения.\n"
+    "Если неизвестно — нажмите кнопку ниже."
+)
+
+CONTACT_WIZARD_ASK_PLACE = "Шаг 5 из 5. Город рождения?\n\nНапример: Козловка"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -225,6 +246,37 @@ def contacts_delete_keyboard(contacts: Iterable[Any]) -> InlineKeyboardMarkup | 
         for contact in contacts
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def contact_relation_keyboard() -> InlineKeyboardMarkup:
+    """Skip the optional relation step of the contact wizard."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data=CONTACT_SKIP_RELATION_CALLBACK)]
+        ]
+    )
+
+
+def contact_time_keyboard() -> InlineKeyboardMarkup:
+    """Mark the birth time of a contact as unknown."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Не знаю время", callback_data=CONTACT_UNKNOWN_TIME_CALLBACK)]
+        ]
+    )
+
+
+def format_contact_saved(contact: Any) -> str:
+    """Confirmation of a stored contact; shared by the wizard and /contact."""
+    relation = f" ({contact.relation})" if contact.relation else ""
+    time_text = "" if contact.birth_time is None else f" {contact.birth_time.strftime('%H:%M')}"
+    zone = f" ({contact.birth_timezone})" if contact.birth_timezone else ""
+    return (
+        f"✅ Контакт сохранён: {contact.name}{relation}\n"
+        f"📅 {contact.birth_date.strftime('%d.%m.%Y')}{time_text}{zone}\n"
+        f"📍 {contact.birth_city or '—'}\n\n"
+        "Прогноз по этому человеку и совместимость — в меню «📅 Прогноз» и «💞 Совместимость»."
+    )
 
 
 def format_confirmation(

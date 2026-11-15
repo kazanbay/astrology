@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import date, time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,13 @@ from bot_ui import (
     BUTTON_PREMIUM,
     BUTTON_SYNASTRY,
     CONTACTS_DELETE_PREFIX,
+    CONTACT_SKIP_RELATION_CALLBACK,
+    CONTACT_UNKNOWN_TIME_CALLBACK,
+    CONTACT_WIZARD_ASK_DATE,
+    CONTACT_WIZARD_ASK_NAME,
+    CONTACT_WIZARD_ASK_PLACE,
+    CONTACT_WIZARD_ASK_RELATION,
+    CONTACT_WIZARD_ASK_TIME,
     CONFIRM_CALLBACK,
     EDIT_CALLBACK,
     FORECAST_CONTACTS_CALLBACK,
@@ -51,10 +59,13 @@ from bot_ui import (
     build_birth_data,
     confirm_keyboard,
     contact_pick_keyboard,
+    contact_relation_keyboard,
+    contact_time_keyboard,
     contacts_delete_keyboard,
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_contact_saved,
     format_stored_profile,
     main_menu,
     premium_keyboard,
@@ -83,6 +94,7 @@ from services.presentation import (
 from services.profiles import (
     CONTACT_COMMAND_USAGE,
     PREMIUM_REQUIRED_MESSAGE,
+    ContactCommandInput,
     ContactPermissionError,
     PremiumRequiredError,
     ProfileChangeLimitError,
@@ -142,6 +154,16 @@ class ChartForm(StatesGroup):
     birth_time = State()
     birth_place = State()
     confirm = State()
+
+
+class ContactForm(StatesGroup):
+    """Steps of the contact wizard (premium feature)."""
+
+    name = State()
+    relation = State()
+    birth_date = State()
+    birth_time = State()
+    birth_place = State()
 
 
 async def _send_previews(message: Message, chunks: list[dict[str, Any]]) -> None:
@@ -1063,8 +1085,140 @@ def create_dispatcher(
             text = "Контакт не найден.\n\n" + text
         await _show_inline(callback, text, contacts_delete_keyboard(contacts))
 
+    async def start_contact_wizard(message: Message, state: FSMContext) -> None:
+        """Step-by-step contact entry: no pipe syntax to memorise."""
+        await state.clear()
+        if chart_pipeline is None or premium_catalog is None:
+            await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
+            return
+        user = message.from_user
+        if user is None:
+            return
+        try:
+            profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=user.id)
+        except ProfileError as exc:
+            await message.answer(str(exc), reply_markup=main_menu())
+            return
+        if not has_premium(profile, user.id):
+            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=main_menu())
+            return
+        await state.update_data(contact_owner_id=profile.user_id)
+        await state.set_state(ContactForm.name)
+        await message.answer(CONTACT_WIZARD_ASK_NAME)
+
+    @router.message(ContactForm.name)
+    async def contact_name_step(message: Message, state: FSMContext) -> None:
+        name = (message.text or "").strip()
+        if not name:
+            await message.answer(CONTACT_WIZARD_ASK_NAME)
+            return
+        await state.update_data(contact_name=name[:255])
+        await state.set_state(ContactForm.relation)
+        await message.answer(CONTACT_WIZARD_ASK_RELATION, reply_markup=contact_relation_keyboard())
+
+    @router.message(ContactForm.relation)
+    async def contact_relation_step(message: Message, state: FSMContext) -> None:
+        text = (message.text or "").strip()
+        await state.update_data(contact_relation=text[:100] if text else None)
+        await state.set_state(ContactForm.birth_date)
+        await message.answer(CONTACT_WIZARD_ASK_DATE)
+
+    @router.callback_query(ContactForm.relation, F.data == CONTACT_SKIP_RELATION_CALLBACK)
+    async def contact_relation_skip(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        await state.update_data(contact_relation=None)
+        await state.set_state(ContactForm.birth_date)
+        await _drop_markup(callback.message)
+        if callback.message is not None:
+            await callback.message.answer(CONTACT_WIZARD_ASK_DATE)
+
+    @router.message(ContactForm.birth_date)
+    async def contact_date_step(message: Message, state: FSMContext) -> None:
+        try:
+            parsed = parse_birth_date(message.text or "")
+        except BirthInputError as exc:
+            await message.answer(f"{exc}\n\n{CONTACT_WIZARD_ASK_DATE}")
+            return
+        await state.update_data(contact_birth_date=parsed.isoformat())
+        await state.set_state(ContactForm.birth_time)
+        await message.answer(CONTACT_WIZARD_ASK_TIME, reply_markup=contact_time_keyboard())
+
+    @router.message(ContactForm.birth_time)
+    async def contact_time_step(message: Message, state: FSMContext) -> None:
+        try:
+            parsed = parse_birth_time(message.text or "")
+        except BirthInputError as exc:
+            await message.answer(
+                f"{exc}\n\n{CONTACT_WIZARD_ASK_TIME}", reply_markup=contact_time_keyboard()
+            )
+            return
+        await state.update_data(
+            contact_birth_time=parsed.strftime("%H:%M"), contact_time_unknown=False
+        )
+        await state.set_state(ContactForm.birth_place)
+        await message.answer(CONTACT_WIZARD_ASK_PLACE)
+
+    @router.callback_query(ContactForm.birth_time, F.data == CONTACT_UNKNOWN_TIME_CALLBACK)
+    async def contact_time_unknown(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        await state.update_data(contact_birth_time=None, contact_time_unknown=True)
+        await state.set_state(ContactForm.birth_place)
+        await _drop_markup(callback.message)
+        if callback.message is not None:
+            await callback.message.answer(CONTACT_WIZARD_ASK_PLACE)
+
+    @router.message(ContactForm.birth_place)
+    async def contact_place_step(message: Message, state: FSMContext) -> None:
+        city = (message.text or "").strip()
+        if not city:
+            await message.answer(CONTACT_WIZARD_ASK_PLACE)
+            return
+        if chart_pipeline is None:
+            await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
+            return
+        data = await state.get_data()
+        try:
+            parsed = ContactCommandInput(
+                name=str(data.get("contact_name") or "Без имени"),
+                relation=data.get("contact_relation"),
+                birth_date=date.fromisoformat(str(data["contact_birth_date"])),
+                birth_time=(
+                    time.fromisoformat(str(data["contact_birth_time"]))
+                    if data.get("contact_birth_time")
+                    else None
+                ),
+                time_unknown=bool(data.get("contact_time_unknown")),
+                city=city,
+            )
+            owner_id = int(data["contact_owner_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            await state.clear()
+            await message.answer(f"Данные мастера потерялись ({exc}). Начните заново: /contact")
+            return
+        await message.answer(f"Ищу город «{city}»…")
+        try:
+            geo = await asyncio.to_thread(geocode_city, city, timeout=GEO_TIMEOUT)
+            tz_name = await asyncio.to_thread(detect_timezone, geo["lat"], geo["lon"])
+            contact = await create_contact_from_command(
+                chart_pipeline.store, owner_id, parsed, geo, tz_name
+            )
+        except BirthInputError as exc:
+            await message.answer(f"Не удалось сохранить контакт: {exc}")
+            return
+        except Exception:
+            logger.exception("contact creation failed")
+            await message.answer("Не удалось сохранить контакт. Попробуйте позже.")
+            return
+        await state.clear()
+        await message.answer(format_contact_saved(contact), reply_markup=main_menu())
+
     @router.message(Command("contact"))
-    async def contact_add_command(message: Message, command: CommandObject) -> None:
+    async def contact_add_command(
+        message: Message, command: CommandObject, state: FSMContext
+    ) -> None:
+        if not (command.args or "").strip():
+            await start_contact_wizard(message, state)
+            return
         if not services_ready():
             await message.answer("Контакты недоступны: не настроено подключение к PostgreSQL.")
             return
@@ -1099,12 +1253,8 @@ def create_dispatcher(
             logger.exception("contact creation failed")
             await message.answer("Не удалось сохранить контакт. Попробуйте позже.")
             return
-        relation = f" ({contact.relation})" if contact.relation else ""
-        time_text = "" if contact.birth_time is None else f" {contact.birth_time.strftime('%H:%M')}"
         await message.answer(
-            f"✅ Контакт сохранён: {contact.name}{relation}, "
-            f"{contact.birth_date.strftime('%d.%m.%Y')}{time_text}, "
-            f"{contact.birth_city or parsed.city}.",
+            format_contact_saved(contact),
             reply_markup=main_menu(),
         )
 

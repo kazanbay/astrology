@@ -16,6 +16,13 @@ from bot_ui import (
     BUTTON_SYNASTRY,
     CONFIRM_CALLBACK,
     CONTACTS_DELETE_PREFIX,
+    CONTACT_SKIP_RELATION_CALLBACK,
+    CONTACT_UNKNOWN_TIME_CALLBACK,
+    CONTACT_WIZARD_ASK_DATE,
+    CONTACT_WIZARD_ASK_NAME,
+    CONTACT_WIZARD_ASK_PLACE,
+    CONTACT_WIZARD_ASK_RELATION,
+    CONTACT_WIZARD_ASK_TIME,
     EDIT_CALLBACK,
     FORECAST_CONTACTS_CALLBACK,
     FORECAST_PICK_PREFIX,
@@ -35,10 +42,13 @@ from bot_ui import (
     build_birth_data,
     confirm_keyboard,
     contact_pick_keyboard,
+    contact_relation_keyboard,
+    contact_time_keyboard,
     contacts_delete_keyboard,
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_contact_saved,
     format_stored_profile,
     main_menu,
     premium_keyboard,
@@ -190,6 +200,36 @@ def test_contacts_delete_keyboard():
 
     markup = contacts_delete_keyboard([contact("Мария", None, 7)])
     assert callback_data(markup) == [f"{CONTACTS_DELETE_PREFIX}7"]
+
+
+def test_contact_wizard_keyboards_and_texts():
+    assert callback_data(contact_relation_keyboard()) == [CONTACT_SKIP_RELATION_CALLBACK]
+    assert callback_data(contact_time_keyboard()) == [CONTACT_UNKNOWN_TIME_CALLBACK]
+    assert "Шаг 1 из 5" in CONTACT_WIZARD_ASK_NAME
+    assert "Шаг 2 из 5" in CONTACT_WIZARD_ASK_RELATION
+    assert "Шаг 3 из 5" in CONTACT_WIZARD_ASK_DATE
+    assert "Шаг 4 из 5" in CONTACT_WIZARD_ASK_TIME
+    assert "Шаг 5 из 5" in CONTACT_WIZARD_ASK_PLACE
+
+
+def test_format_contact_saved_renders_the_card():
+    contact = ContactProfile(
+        contact_id=1,
+        user_id=1,
+        name="Дарья",
+        relation="супруга",
+        birth_date=date(1995, 4, 22),
+        birth_time=time(14, 30),
+        birth_time_unknown=False,
+        birth_timezone="Europe/Moscow",
+        birth_city="Козловка",
+    )
+
+    text = format_contact_saved(contact)
+
+    assert "Дарья (супруга)" in text
+    assert "22.04.1995 14:30 (Europe/Moscow)" in text
+    assert "Козловка" in text
 
 
 def test_confirmation_lists_every_field():
