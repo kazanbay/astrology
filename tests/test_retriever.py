@@ -132,3 +132,20 @@ def test_retriever_keeps_string_book_ids_and_can_return_payload():
 
     assert results[0]["document_id"] == "cbae3ff9-56ce-5fba-896b-9da5466ae7f6"
     assert results[0]["payload"]["chunk_id"] == "point-1"
+
+
+def test_collection_name_defaults_to_the_semantic_paragraphs(monkeypatch):
+    monkeypatch.delenv("QDRANT_COLLECTION", raising=False)
+
+    retriever = QdrantRetriever(model=FakeModel(), client=FakeClient())
+
+    assert retriever.collection_name == "vronsky_semantic_paragraph"
+    assert COLLECTION_NAME == "vronsky_semantic_paragraph"
+
+
+def test_collection_name_env_override(monkeypatch):
+    monkeypatch.setenv("QDRANT_COLLECTION", "custom_chunks")
+
+    retriever = QdrantRetriever(model=FakeModel(), client=FakeClient())
+
+    assert retriever.collection_name == "custom_chunks"

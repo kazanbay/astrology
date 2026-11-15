@@ -116,7 +116,13 @@ class ForecastReportService:
         chunks: list[dict[str, Any]] = []
         if retriever is not None:
             query = forecast_query(result)
-            chunks = await asyncio.to_thread(retriever.search, query, self.top_k)
+            try:
+                chunks = await asyncio.to_thread(retriever.search, query, self.top_k)
+            except Exception:
+                # A missing collection or a network hiccup must not cost the
+                # user the whole interpretation: the prompt is instructed to
+                # stay general when no fragment is available.
+                logger.exception("forecast retrieval failed; interpreting without chunks")
 
         text = await self._synthesize(
             dict(result), list(chunks), self.model_name, self.temperature

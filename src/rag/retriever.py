@@ -12,7 +12,12 @@ from dotenv import load_dotenv
 from .embedding import get_embedding_backend
 
 
-COLLECTION_NAME = "astrology_chunks"
+#: Default knowledge-base collection: the semantic-paragraph chunking of the
+#: Vronsky volumes (transitology included). ``QDRANT_COLLECTION`` overrides it,
+#: so a re-indexed or renamed collection needs no code change.
+DEFAULT_COLLECTION_NAME = "vronsky_semantic_paragraph"
+#: Backwards-compatible alias (scripts and tests import this name).
+COLLECTION_NAME = DEFAULT_COLLECTION_NAME
 
 
 class QdrantRetriever:
@@ -36,7 +41,11 @@ class QdrantRetriever:
             raise RuntimeError("QDRANT_API_KEY is missing from the environment or .env")
 
         self.model = model if model is not None else get_embedding_backend()
-        self.collection_name = collection_name or COLLECTION_NAME
+        self.collection_name = (
+            collection_name
+            or os.getenv("QDRANT_COLLECTION", "").strip()
+            or DEFAULT_COLLECTION_NAME
+        )
         if client is None:
             from qdrant_client import QdrantClient
 
