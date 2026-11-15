@@ -39,6 +39,9 @@ CONTACT_RELATION_LIMIT = 100
 #: Allowed audit sources of a premium grant.
 PREMIUM_SOURCES: tuple[str, ...] = ("manual", "referral", "telegram_stars", "other")
 
+#: Allowed feature-usage event types for product analytics.
+ANALYTICS_EVENT_TYPES: tuple[str, ...] = ("chart", "forecast", "synastry", "other")
+
 UPSERT_USER_SQL = """
 WITH inserted AS (
     INSERT INTO users (telegram_id, email, first_name, last_name, display_name)
@@ -309,6 +312,31 @@ SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, 
 """
 
 MARK_FEEDBACK_ANSWERED_SQL = "UPDATE feedback SET status = 'answered' WHERE id = $1"
+
+TOUCH_USER_SQL = "UPDATE users SET last_active_at = NOW() WHERE telegram_id = $1"
+
+INSERT_EVENT_SQL = "INSERT INTO analytics_events (user_id, event_type) VALUES ($1, $2)"
+
+ANALYTICS_SQL = """
+SELECT
+  (SELECT count(*) FROM users) AS total_users,
+  (SELECT count(*) FROM users WHERE created_at >= $1) AS new_users,
+  (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '24 hours') AS dau,
+  (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '7 days') AS wau,
+  (SELECT count(*) FROM users WHERE last_active_at >= now() - interval '30 days') AS mau,
+  (SELECT count(*) FROM users
+    WHERE is_premium OR (premium_until IS NOT NULL AND premium_until > now())) AS active_premium,
+  (SELECT count(*) FROM payments WHERE created_at >= $1) AS new_payments,
+  (SELECT COALESCE(sum(stars), 0) FROM payments WHERE created_at >= $1) AS revenue_stars,
+  (SELECT count(*) FROM analytics_events
+    WHERE event_type = 'chart' AND created_at >= $1) AS charts,
+  (SELECT count(*) FROM analytics_events
+    WHERE event_type = 'forecast' AND created_at >= $1) AS forecasts,
+  (SELECT count(*) FROM analytics_events
+    WHERE event_type = 'synastry' AND created_at >= $1) AS synastry,
+  (SELECT count(*) FROM feedback WHERE created_at >= $1) AS feedback_new,
+  (SELECT count(*) FROM feedback WHERE status = 'new') AS feedback_open
+"""
 
 UPDATE_CONTACT_SQL = """
 UPDATE user_contacts
@@ -676,6 +704,12 @@ class ChartStore(Protocol):
     async def find_open_feedback(self, user_id: int) -> FeedbackTicket | None: ...
 
     async def mark_feedback_answered(self, feedback_id: int) -> bool: ...
+
+    async def touch_user(self, telegram_id: int) -> None: ...
+
+    async def record_event(self, user_id: int, event_type: str) -> None: ...
+
+    async def collect_analytics(self, since: datetime) -> dict[str, int]: ...
 
     async def update_contact(
         self, contact_id: int, user_id: int, contact: ContactInput
@@ -1229,6 +1263,25 @@ class PostgresChartStore:
         """Mark a ticket answered; ``False`` when it does not exist."""
         status = await self.pool.execute(MARK_FEEDBACK_ANSWERED_SQL, int(feedback_id))
         return status.endswith(" 1")
+
+    async def touch_user(self, telegram_id: int) -> None:
+        """Refresh last_active_at for an existing account; unknown ids are ignored."""
+        await self.pool.execute(TOUCH_USER_SQL, int(telegram_id))
+
+    async def record_event(self, user_id: int, event_type: str) -> None:
+        """Append one feature-usage event (chart / forecast / synastry / other)."""
+        if event_type not in ANALYTICS_EVENT_TYPES:
+            raise ValueError(
+                f"event_type must be one of {', '.join(ANALYTICS_EVENT_TYPES)}"
+            )
+        await self.pool.execute(INSERT_EVENT_SQL, int(user_id), event_type)
+
+    async def collect_analytics(self, since: datetime) -> dict[str, int]:
+        """One snapshot of product metrics since the given instant."""
+        row = await self.pool.fetchrow(ANALYTICS_SQL, since)
+        if row is None:  # pragma: no cover - scalar subqueries always return a row
+            raise RuntimeError("analytics query returned no row")
+        return {key: int(row[key] or 0) for key in row.keys()}
 
     async def update_contact(
         self, contact_id: int, user_id: int, contact: ContactInput

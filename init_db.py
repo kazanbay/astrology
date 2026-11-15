@@ -142,6 +142,19 @@ DDL_STATEMENTS: Sequence[str] = (
     "CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback (status, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_admin_message "
     "ON feedback (admin_chat_id, admin_message_id)",
+    # --- Product analytics -------------------------------------------------
+    # last_active_at is touched on every interaction (throttled in the bot).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ",
+    # Feature usage events: chart | forecast | synastry | other.
+    """CREATE TABLE IF NOT EXISTS analytics_events (
+        event_id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        event_type VARCHAR(32) NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_analytics_events_type_time "
+    "ON analytics_events (event_type, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_users_last_active ON users (last_active_at)",
     # 2. Cache shared by every user with the same birth data (twins included).
     #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
     #    language, so one row holds both the ephemeris snapshot and the exact

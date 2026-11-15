@@ -8,7 +8,7 @@ id and removes exactly those rows afterwards.
 import asyncio
 import hashlib
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 
@@ -174,6 +174,9 @@ async def _profile_contacts_scenario() -> None:
             await store.pool.execute("DELETE FROM users WHERE telegram_id = $1", stale_id)
         await store.pool.execute(
             "DELETE FROM feedback WHERE user_id = $1", TEST_TELEGRAM_ID
+        )
+        await store.pool.execute(
+            "DELETE FROM analytics_events WHERE user_id = $1", TEST_TELEGRAM_ID
         )
         user_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест")
         birth = BirthData(
@@ -451,6 +454,18 @@ async def _profile_contacts_scenario() -> None:
         assert await store.mark_feedback_answered(ticket.id) is True
         assert await store.find_open_feedback(user_id) is None
         assert await store.mark_feedback_answered(999999999) is False
+
+        # Analytics: activity touch and feature events feed the digests.
+        await store.touch_user(TEST_TELEGRAM_ID)
+        await store.record_event(TEST_TELEGRAM_ID, "chart")
+        await store.record_event(TEST_TELEGRAM_ID, "forecast")
+        metrics = await store.collect_analytics(
+            since=datetime.now(timezone.utc) - timedelta(hours=1)
+        )
+        assert metrics["total_users"] >= 1
+        assert metrics["charts"] >= 1 and metrics["forecasts"] >= 1
+        with pytest.raises(ValueError):
+            await store.record_event(TEST_TELEGRAM_ID, "unknown")
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
@@ -460,6 +475,9 @@ async def _profile_contacts_scenario() -> None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", invited_id)
         await store.pool.execute(
             "DELETE FROM feedback WHERE user_id = $1", TEST_TELEGRAM_ID
+        )
+        await store.pool.execute(
+            "DELETE FROM analytics_events WHERE user_id = $1", TEST_TELEGRAM_ID
         )
         await store.close()
 

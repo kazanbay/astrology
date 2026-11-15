@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic
 from pathlib import Path
 from typing import Any
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -97,12 +98,14 @@ from bot_ui import (
 from generator.report import ChartReportService
 from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
+from services.analytics import format_stats_now
 from services.feedback import (
     format_admin_reply,
     format_ticket_notice,
     parse_user_id,
 )
 from services.forecast import ForecastService
+from services.digest import run_digest_scheduler
 from services.forecast_report import ForecastReportService
 from services.premium import (
     PremiumCatalog,
@@ -216,6 +219,28 @@ async def _drop_markup(message: Message | None) -> None:
         pass
 
 
+class LastActiveMiddleware(BaseMiddleware):
+    """Touch ``users.last_active_at`` at most once a minute per account."""
+
+    WINDOW_SECONDS = 60.0
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+        self._seen: dict[int, float] = {}
+
+    async def __call__(self, handler: Any, event: Any, data: dict[str, Any]) -> Any:
+        user = getattr(event, "from_user", None)
+        if user is not None and not user.is_bot:
+            now = monotonic()
+            if now - self._seen.get(user.id, 0.0) >= self.WINDOW_SECONDS:
+                self._seen[user.id] = now
+                try:
+                    await self.store.touch_user(user.id)
+                except Exception:
+                    logger.debug("last_active_at update failed", exc_info=True)
+        return await handler(event, data)
+
+
 def create_dispatcher(
     retriever: QdrantRetriever,
     generator: RAGGenerator,
@@ -228,9 +253,12 @@ def create_dispatcher(
     premium_catalog: PremiumCatalog | None = None,
     bot_username: str | None = None,
     admin_chat_id: int | None = None,
+    admin_user_ids: set[int] | None = None,
 ) -> Dispatcher:
     """Create handlers bound to the single startup instances of the services."""
     dispatcher = Dispatcher()
+    if chart_pipeline is not None:
+        dispatcher.update.outer_middleware(LastActiveMiddleware(chart_pipeline.store))
     router = Router()
 
     def services_ready() -> bool:
@@ -384,6 +412,8 @@ def create_dispatcher(
             logger.exception("chart request failed")
             await message.answer("Не удалось рассчитать карту. Попробуйте позже.")
             return False
+
+        await _record_event(user.id, "chart")
 
         # The forecast tools read birth data from the stored profile only, so
         # every successful chart request refreshes the owner's natal profile.
@@ -1011,6 +1041,8 @@ def create_dispatcher(
             await message.answer("Не удалось построить прогноз. Попробуйте позже.")
             return
 
+        await _record_event(user.id, "forecast")
+
         # The interpretation is the product answer; the deterministic table is
         # only a fallback when the LLM or the knowledge base is unavailable.
         if forecast_report_service is not None:
@@ -1115,6 +1147,8 @@ def create_dispatcher(
             logger.exception("synastry request failed")
             await callback.message.answer("Не удалось проверить совместимость. Попробуйте позже.")
             return
+
+        await _record_event(callback.from_user.id, "synastry")
 
         # The reading is the product answer; the deterministic grid is only a
         # fallback, and the user never sees a service apology in chat.
@@ -1639,6 +1673,39 @@ def create_dispatcher(
         except Exception:
             logger.warning("could not set a reaction on the admin message", exc_info=True)
 
+    async def _record_event(telegram_id: int, event_type: str) -> None:
+        """Append one product-analytics event; never breaks the user flow."""
+        if chart_pipeline is None:
+            return
+        try:
+            await chart_pipeline.store.record_event(telegram_id, event_type)
+        except Exception:
+            logger.exception("analytics event failed")
+
+    @router.message(Command("stats"))
+    async def stats_command(message: Message) -> None:
+        """On-demand product snapshot: admin group or admin ids only."""
+        user = message.from_user
+        allowed = (admin_chat_id is not None and message.chat.id == admin_chat_id) or (
+            user is not None and bool(admin_user_ids) and user.id in admin_user_ids
+        )
+        if not allowed or chart_pipeline is None:
+            return
+        now = datetime.now(timezone.utc)
+        try:
+            metrics = await chart_pipeline.store.collect_analytics(
+                since=now - timedelta(days=7)
+            )
+        except Exception:
+            logger.exception("stats collection failed")
+            await message.answer("Не удалось собрать статистику.")
+            return
+        await message.answer(
+            format_stats_now(metrics, now=now),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
     @router.message(Command("id"))
     async def id_handler(message: Message) -> None:
         """Show chat and user ids; used to fill ADMIN_CHAT_ID in .env."""
@@ -1822,6 +1889,12 @@ async def main() -> None:
     except Exception:
         logger.exception("could not resolve the bot username; referral links are disabled")
 
+    admin_user_ids: set[int] = set()
+    for token in os.getenv("ADMIN_USER_IDS", "").replace(";", ",").split(","):
+        token = token.strip()
+        if token.isdigit():
+            admin_user_ids.add(int(token))
+
     store: PostgresChartStore | None = None
     chart_pipeline: ChartPipeline | None = None
     report_service: ChartReportService | None = None
@@ -1860,10 +1933,16 @@ async def main() -> None:
         premium_catalog,
         bot_username,
         admin_chat_id,
+        admin_user_ids,
     )
+    digest_task: asyncio.Task | None = None
+    if admin_chat_id and store is not None:
+        digest_task = asyncio.create_task(run_digest_scheduler(bot, store, admin_chat_id))
     try:
         await dispatcher.start_polling(bot)
     finally:
+        if digest_task is not None:
+            digest_task.cancel()
         await bot.session.close()
         retriever.close()
         generator.close()
