@@ -13,7 +13,7 @@ from datetime import date, datetime, time, timezone
 import pytest
 
 from storage.config import resolve_database_url
-from storage.store import CachedChart, GenerationRecord, PostgresChartStore
+from storage.store import CachedChart, ForecastReportRecord, GenerationRecord, PostgresChartStore
 
 try:
     DSN: str | None = resolve_database_url()
@@ -85,10 +85,30 @@ async def _scenario() -> None:
         assert history[0].input_params["city"] == "Москва"
         assert history[0].generation_id == generation_id
 
+        # Cached LLM interpretations of forecasts (RAG + LLM layer).
+        forecast_id = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+        forecast_record = ForecastReportRecord(
+            report_id=forecast_id,
+            chart_hash=chart_hash,
+            interval="week",
+            forecast_date=date(2026, 1, 15),
+            prompt_version="f1.0",
+            model_name="test-model",
+            temperature=0.7,
+            generated_text="Прогноз периода",
+        )
+        assert await store.save_forecast_report(forecast_record) is True
+        assert await store.save_forecast_report(forecast_record) is False
+        assert await store.get_forecast_report(forecast_id) == "Прогноз периода"
+        assert await store.get_forecast_report("0" * 64) is None
+
         assert await store.get_chart("0" * 64) is None
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
+        await store.pool.execute(
+            "DELETE FROM forecast_reports WHERE chart_hash = $1", chart_hash
+        )
         await store.pool.execute("DELETE FROM charts_cache WHERE chart_hash = $1", chart_hash)
         await store.close()
 

@@ -156,6 +156,23 @@ def format_forecast_text(result: Mapping[str, Any], *, max_chars: int = MAX_TEXT
     return _trim("\n".join(lines), max_chars)
 
 
+def forecast_query(result: Mapping[str, Any], *, limit: int = 5) -> str:
+    """Knowledge-base search query built from the strongest transits."""
+    events = result.get("events") or []
+    parts: list[str] = []
+    for event in events[:limit]:
+        if not isinstance(event, Mapping):
+            continue
+        parts.append(
+            f"{_planet(event.get('transit'))} {_aspect(event.get('aspect'))} "
+            f"{_point(event.get('natal'))}"
+        )
+    interval = INTERVAL_TITLES_RU.get(str(result.get("interval") or ""), "")
+    head = f"Транзиты {interval}" if interval else "Транзиты"
+    body = "; ".join(parts) if parts else "спокойный период без точных транзитов"
+    return f"{head}: {body}. Классическая астрология, толкование транзитов"
+
+
 def _highlight(positions: Any) -> str:
     """The Sun/Moon/Venus/Mars placements of one person as a compact line."""
     if not isinstance(positions, Mapping):

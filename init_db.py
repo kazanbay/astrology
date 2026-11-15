@@ -105,6 +105,21 @@ DDL_STATEMENTS: Sequence[str] = (
     "CREATE INDEX IF NOT EXISTS idx_llm_generations_chart_hash ON llm_generations (chart_hash)",
     # Existing databases kept the narrow column; widening is idempotent.
     "ALTER TABLE llm_generations ALTER COLUMN prompt_version TYPE VARCHAR(255)",
+    # 3b. Cached LLM interpretations of transit forecasts: one row per
+    #     (target chart, interval, local day, prompt version, model).
+    """CREATE TABLE IF NOT EXISTS forecast_reports (
+        report_id VARCHAR(64) PRIMARY KEY,
+        chart_hash VARCHAR(64) NOT NULL,
+        interval VARCHAR(16) NOT NULL,
+        forecast_date DATE NOT NULL,
+        prompt_version VARCHAR(255) NOT NULL,
+        model_name VARCHAR(128) NOT NULL,
+        temperature NUMERIC(3, 2) NOT NULL,
+        generated_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_forecast_reports_chart "
+    "ON forecast_reports (chart_hash, forecast_date)",
     # 4. Per-user request history: many profiles per user, one chart hash each.
     """CREATE TABLE IF NOT EXISTS user_chart_requests (
         request_id SERIAL PRIMARY KEY,

@@ -60,6 +60,7 @@ from generator.report import ChartReportService
 from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
 from services.forecast import ForecastService
+from services.forecast_report import ForecastReportService
 from services.presentation import (
     format_contacts_list,
     format_forecast_text,
@@ -145,6 +146,7 @@ def create_dispatcher(
     chart_pipeline: ChartPipeline | None = None,
     report_service: ChartReportService | None = None,
     forecast_service: ForecastService | None = None,
+    forecast_report_service: ForecastReportService | None = None,
     synastry_service: SynastryService | None = None,
 ) -> Dispatcher:
     """Create handlers bound to the single startup instances of the services."""
@@ -660,7 +662,7 @@ def create_dispatcher(
         if forecast_service is None:
             await message.answer("Прогнозы недоступны: не настроено подключение к PostgreSQL.")
             return
-        await message.answer("Считаю транзиты…")
+        await message.answer("Считаю транзиты и готовлю разбор…")
         try:
             result = await forecast_service.get_forecast_for_interval(
                 user.id, interval, contact_id=contact_id
@@ -684,6 +686,23 @@ def create_dispatcher(
             logger.exception("forecast request failed")
             await message.answer("Не удалось построить прогноз. Попробуйте позже.")
             return
+
+        # The interpretation is the product answer; the deterministic table is
+        # only a fallback when the LLM or the knowledge base is unavailable.
+        if forecast_report_service is not None:
+            try:
+                interpretation = await forecast_report_service.get_or_generate(
+                    result, retriever=retriever
+                )
+            except Exception:
+                logger.exception("forecast interpretation failed")
+                await message.answer(
+                    "Интерпретация по книгам сейчас недоступна — показываю расчёт транзитов."
+                )
+            else:
+                for part in split_message(interpretation["text"]):
+                    await message.answer(part, disable_web_page_preview=True)
+                return
         for part in split_message(format_forecast_text(result)):
             await message.answer(part, disable_web_page_preview=True)
 
@@ -894,6 +913,7 @@ async def main() -> None:
     chart_pipeline: ChartPipeline | None = None
     report_service: ChartReportService | None = None
     forecast_service: ForecastService | None = None
+    forecast_report_service: ForecastReportService | None = None
     synastry_service: SynastryService | None = None
     if os.getenv("DATABASE_URL", "").strip():
         try:
@@ -901,6 +921,7 @@ async def main() -> None:
             chart_pipeline = ChartPipeline(store)
             report_service = ChartReportService(store)
             forecast_service = ForecastService(store)
+            forecast_report_service = ForecastReportService(store)
             synastry_service = SynastryService(store)
         except Exception:
             logger.exception("chart storage is unavailable; /chart and /history are disabled")
@@ -908,10 +929,17 @@ async def main() -> None:
             chart_pipeline = None
             report_service = None
             forecast_service = None
+            forecast_report_service = None
             synastry_service = None
 
     dispatcher = create_dispatcher(
-        retriever, generator, chart_pipeline, report_service, forecast_service, synastry_service
+        retriever,
+        generator,
+        chart_pipeline,
+        report_service,
+        forecast_service,
+        forecast_report_service,
+        synastry_service,
     )
     try:
         await dispatcher.start_polling(bot)

@@ -116,6 +116,21 @@ UPDATE user_chart_requests
  WHERE request_id = $1
 """
 
+SELECT_FORECAST_REPORT_SQL = """
+SELECT generated_text
+  FROM forecast_reports
+ WHERE report_id = $1
+"""
+
+INSERT_FORECAST_REPORT_SQL = """
+INSERT INTO forecast_reports
+       (report_id, chart_hash, interval, forecast_date, prompt_version, model_name,
+        temperature, generated_text)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (report_id) DO NOTHING
+RETURNING report_id
+"""
+
 SELECT_PROFILE_SQL = """
 SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_premium,
        birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
@@ -211,6 +226,21 @@ class GenerationRecord:
 
     generation_id: str
     chart_hash: str
+    prompt_version: str
+    model_name: str
+    temperature: float
+    generated_text: str
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ForecastReportRecord:
+    """One ``forecast_reports`` row: a cached LLM interpretation of a forecast."""
+
+    report_id: str
+    chart_hash: str
+    interval: str
+    forecast_date: date
     prompt_version: str
     model_name: str
     temperature: float
@@ -367,6 +397,10 @@ class ChartStore(Protocol):
     async def save_generation(self, record: GenerationRecord) -> bool: ...
 
     async def attach_generation(self, request_id: int, generation_id: str) -> None: ...
+
+    async def get_forecast_report(self, report_id: str) -> str | None: ...
+
+    async def save_forecast_report(self, record: ForecastReportRecord) -> bool: ...
 
     async def get_user_profile(
         self, *, telegram_id: int | str | None = None, email: str | None = None
@@ -670,6 +704,34 @@ class PostgresChartStore:
         status = await self.pool.execute(ATTACH_GENERATION_SQL, int(request_id), generation_id)
         if status.endswith(" 0"):
             raise ValueError(f"request_id {request_id} does not exist")
+
+    async def get_forecast_report(self, report_id: str) -> str | None:
+        """Return the cached forecast interpretation, or ``None`` on a miss."""
+        if not isinstance(report_id, str) or len(report_id) != 64:
+            raise ValueError("report_id must be a 64-character SHA-256 hex string")
+        text = await self.pool.fetchval(SELECT_FORECAST_REPORT_SQL, report_id)
+        return str(text) if text is not None else None
+
+    async def save_forecast_report(self, record: ForecastReportRecord) -> bool:
+        """Insert a forecast interpretation; ``False`` means another request won."""
+        if not isinstance(record, ForecastReportRecord):
+            raise ValueError("save_forecast_report expects a ForecastReportRecord")
+        if len(record.report_id) != 64:
+            raise ValueError("report_id must be a 64-character SHA-256 hex string")
+        if len(record.chart_hash) != 64:
+            raise ValueError("chart_hash must be a 64-character SHA-256 hex string")
+        stored = await self.pool.fetchval(
+            INSERT_FORECAST_REPORT_SQL,
+            record.report_id,
+            record.chart_hash,
+            record.interval,
+            record.forecast_date,
+            record.prompt_version,
+            record.model_name,
+            record.temperature,
+            record.generated_text,
+        )
+        return stored is not None
 
     async def get_user_profile(
         self, *, telegram_id: int | str | None = None, email: str | None = None

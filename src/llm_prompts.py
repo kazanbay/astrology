@@ -41,10 +41,12 @@ logger = logging.getLogger(__name__)
 #: Default prompt names in the Langfuse UI (overridable via environment).
 INTERPRETATION_PROMPT_NAME = "astrology_interpretation"
 QA_PROMPT_NAME = "astrology_qa"
+FORECAST_PROMPT_NAME = "astrology_forecast"
 
 _PROMPT_NAME_OVERRIDES = {
     INTERPRETATION_PROMPT_NAME: "LANGFUSE_PROMPT_NAME_INTERPRETATION",
     QA_PROMPT_NAME: "LANGFUSE_PROMPT_NAME_QA",
+    FORECAST_PROMPT_NAME: "LANGFUSE_PROMPT_NAME_FORECAST",
 }
 
 _ENABLED_ENV_VAR = "LANGFUSE_PROMPTS_ENABLED"

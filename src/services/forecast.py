@@ -25,6 +25,7 @@ from types import MappingProxyType
 from typing import Any
 
 from storage.birth import BirthData
+from storage.hashing import generate_chart_hash
 from storage.store import ChartStore, UserProfile
 
 from .profiles import (
@@ -245,6 +246,26 @@ def _transit_snapshot(
     return snapshot
 
 
+def _natal_summary(natal: dict[str, Any]) -> dict[str, Any]:
+    """Compact natal snapshot for the interpretation prompt (no longitudes)."""
+    summary: dict[str, Any] = {"planets": {}, "angles": {}}
+    planets = natal.get("planets") or {}
+    for name in NATAL_TARGET_NAMES:
+        if name in ("Ascendant", "Midheaven"):
+            continue
+        position = planets.get(name)
+        if isinstance(position, dict) and position.get("sign"):
+            summary["planets"][name] = {
+                "sign": str(position["sign"]),
+                "house": position.get("house"),
+            }
+    for key, label in (("asc", "Ascendant"), ("mc", "Midheaven")):
+        point = natal.get(key)
+        if isinstance(point, dict) and point.get("sign"):
+            summary["angles"][label] = {"sign": str(point["sign"])}
+    return summary
+
+
 class ForecastService:
     """Transit forecasts resolved from stored profiles only."""
 
@@ -304,6 +325,9 @@ class ForecastService:
             "tool": "forecast",
             "telegram_id": telegram,
             "interval": interval,
+            "chart_hash": generate_chart_hash(
+                birth.dt_utc, birth.latitude, birth.longitude, birth.house_system, birth.language
+            ),
             "person": person,
             "birth": {
                 "city": birth.city,
@@ -317,6 +341,7 @@ class ForecastService:
                 "days": plan.days,
             },
             "generated_at": now.isoformat(),
+            "natal": _natal_summary(natal),
             "now_transits": snapshot,
             "events": events[: self.max_events],
             "event_count": len(events),

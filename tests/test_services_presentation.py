@@ -1,6 +1,7 @@
 """Unit tests of the Telegram rendering of the forecast and synastry tools."""
 
 from services.presentation import (
+    forecast_query,
     format_contacts_list,
     format_forecast_text,
     format_synastry_text,
@@ -86,6 +87,15 @@ def test_forecast_titles_for_every_interval():
     ):
         text = format_forecast_text({**FORECAST_RESULT, "interval": interval, "events": []})
         assert text.startswith(f"📅 Прогноз {title}")
+
+
+def test_forecast_query_uses_the_strongest_transits():
+    query = forecast_query(FORECAST_RESULT)
+
+    assert query.startswith("Транзиты на день:")
+    assert "Сатурн квадрат Солнце" in query
+    assert "Луна соединение Луна" in query
+    assert "толкование транзитов" in query
 
 
 def test_synastry_text_renders_people_and_aspects():
