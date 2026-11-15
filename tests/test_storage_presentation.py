@@ -244,6 +244,14 @@ def test_to_telegram_html_keeps_plain_text_and_single_asterisks():
     assert to_telegram_html("") == ""
 
 
+def test_to_telegram_html_converts_single_asterisk_bold_and_rules():
+    result = to_telegram_html("*Жирный* текст\n---\n• пункт")
+
+    assert "<b>Жирный</b>" in result
+    assert "──────────" in result
+    assert "*" not in result
+
+
 def test_split_message_moves_trailing_heading_to_next_part():
     intro = "А" * 200
     heading = "💼 **2. Социальная реализация и вектор судьбы**"

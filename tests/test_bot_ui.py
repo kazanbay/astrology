@@ -72,7 +72,9 @@ from bot_ui import (
     premium_keyboard,
     premium_upsell_keyboard,
     profile_confirm_keyboard,
+    render_ui_html,
     skip_name_keyboard,
+    strip_ui_markdown,
     unknown_time_keyboard,
 )
 from storage.store import ContactProfile, UserProfile
@@ -319,6 +321,29 @@ def test_contact_pick_keyboard_can_offer_adding_a_contact():
     )
 
     assert callback_data(markup) == [f"{SYNASTRY_PREFIX}7", CONTACTS_ADD_SYNASTRY_CALLBACK]
+
+
+def test_render_ui_html_converts_light_markdown():
+    text = render_ui_html("*Жирный* и `код`\n---\n<опасно>")
+
+    assert "<b>Жирный</b>" in text
+    assert "<code>код</code>" in text
+    assert "──────────" in text
+    assert "&lt;опасно&gt;" in text
+
+
+def test_strip_ui_markdown_removes_markers_and_tags():
+    plain = strip_ui_markdown("<b>Жирный</b> *и* `код`")
+
+    assert plain == "Жирный и код"
+
+
+def test_help_and_greeting_render_without_asterisks():
+    for text in (GREETING, HELP):
+        rendered = render_ui_html(text)
+        assert "<b>" in rendered
+        assert "*" not in rendered
+        assert "`" not in rendered
 
 
 def test_confirmation_lists_every_field():

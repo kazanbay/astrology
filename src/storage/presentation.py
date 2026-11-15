@@ -52,6 +52,10 @@ DEFAULT_MAX_CHARS = 3800
 REPORT_PART_LIMIT = 3000
 
 _BOLD_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+#: Single-asterisk emphasis that models sometimes use instead of ``**bold**``.
+_SINGLE_BOLD_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
+#: A line that is only a horizontal rule, e.g. ``---``.
+_RULE_RE = re.compile(r"^[ \t]*---+[ \t]*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 #: Markdown list markers Telegram renders as literal stars; replace with a bullet.
 _BULLET_RE = re.compile(r"^([ \t]*)[*+-][ \t]+", re.MULTILINE)
@@ -362,8 +366,10 @@ def to_telegram_html(text: str) -> str:
         return ""
     escaped = html.escape(text, quote=False)
     escaped = _HEADING_RE.sub(lambda match: f"<b>{match.group(1)}</b>", escaped)
+    escaped = _RULE_RE.sub("──────────", escaped)
     escaped = _BULLET_RE.sub(lambda match: f"{match.group(1)}• ", escaped)
-    return _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    escaped = _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    return _SINGLE_BOLD_RE.sub(r"<b>\1</b>", escaped)
 
 
 def format_history(records: Iterable[Any], *, max_chars: int = DEFAULT_MAX_CHARS) -> str:

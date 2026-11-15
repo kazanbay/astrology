@@ -92,7 +92,9 @@ from bot_ui import (
     premium_keyboard,
     premium_upsell_keyboard,
     profile_confirm_keyboard,
+    render_ui_html,
     skip_name_keyboard,
+    strip_ui_markdown,
     unknown_time_keyboard,
 )
 from generator.report import ChartReportService
@@ -277,6 +279,33 @@ def create_dispatcher(
             await callback.message.edit_text(text, reply_markup=markup)
         except TelegramBadRequest:
             await callback.message.answer(text, reply_markup=markup)
+
+    async def _send_ui(
+        message: Message, text: str, *, reply_markup: Any = None
+    ) -> None:
+        """Send an authored UI text with explicit HTML parsing.
+
+        The texts keep a light Markdown for editing convenience; sending always
+        declares the parse mode, and a rejected markup never loses the message:
+        the same text is resent as plain text without markers. The main menu is
+        attached by default so a long greeting never leaves the user without
+        buttons.
+        """
+        markup = reply_markup if reply_markup is not None else main_menu()
+        for part in split_message(render_ui_html(text), limit=REPORT_PART_LIMIT):
+            try:
+                await message.answer(
+                    part,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+            except TelegramBadRequest:
+                await message.answer(
+                    strip_ui_markdown(part),
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
 
     async def _pick_contacts(
         telegram_id: int, *, require_premium: bool
@@ -476,7 +505,7 @@ def create_dispatcher(
         code = parse_referral_payload(command.args)
         user = message.from_user
         if code is None or user is None or chart_pipeline is None or premium_catalog is None:
-            await message.answer(GREETING, reply_markup=main_menu())
+            await _send_ui(message, GREETING)
             return
         outcome = None
         try:
@@ -493,7 +522,7 @@ def create_dispatcher(
                 )
         except Exception:
             logger.exception("referral registration failed")
-        await message.answer(GREETING, reply_markup=main_menu())
+        await _send_ui(message, GREETING)
         if outcome is None or outcome.status != "granted" or not outcome.referrer_telegram_id:
             return
         try:
@@ -508,17 +537,17 @@ def create_dispatcher(
     @router.message(CommandStart())
     async def start_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer(GREETING, reply_markup=main_menu())
+        await _send_ui(message, GREETING)
 
     @router.message(Command("help"))
     async def help_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer(HELP, reply_markup=main_menu())
+        await _send_ui(message, HELP)
 
     @router.message(F.text == BUTTON_HELP)
     async def help_button(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer(HELP, reply_markup=main_menu())
+        await _send_ui(message, HELP)
 
     @router.message(F.text == BUTTON_CHART)
     async def chart_button(message: Message, state: FSMContext) -> None:
