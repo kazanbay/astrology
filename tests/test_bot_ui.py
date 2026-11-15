@@ -1,6 +1,7 @@
 """Tests for the onboarding texts and keyboards (no Telegram calls)."""
 
 from datetime import date, time
+from types import SimpleNamespace
 
 from bot_ui import (
     ASK_DATE,
@@ -11,6 +12,7 @@ from bot_ui import (
     BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
+    BUTTON_PREMIUM,
     BUTTON_SYNASTRY,
     CONFIRM_CALLBACK,
     CONTACTS_DELETE_PREFIX,
@@ -22,6 +24,9 @@ from bot_ui import (
     FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
+    INVITE_CALLBACK,
+    PREMIUM_BUY_PREFIX,
+    PREMIUM_HISTORY_CALLBACK,
     PROFILE_CONFIRM_CALLBACK,
     PROFILE_EDIT_CALLBACK,
     SKIP_NAME_CALLBACK,
@@ -36,6 +41,7 @@ from bot_ui import (
     format_confirmation,
     format_stored_profile,
     main_menu,
+    premium_keyboard,
     profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
@@ -55,7 +61,7 @@ def contact(name, relation, contact_id):
     return ContactProfile(contact_id=contact_id, user_id=1, name=name, relation=relation)
 
 
-def test_main_menu_has_chart_forecast_synastry_history_and_help():
+def test_main_menu_has_all_buttons():
     menu = main_menu()
 
     assert button_texts(menu) == [
@@ -63,10 +69,35 @@ def test_main_menu_has_chart_forecast_synastry_history_and_help():
         BUTTON_FORECAST,
         BUTTON_SYNASTRY,
         BUTTON_HISTORY,
+        BUTTON_PREMIUM,
         BUTTON_HELP,
     ]
     assert menu.is_persistent is True
     assert menu.resize_keyboard is True
+
+
+def test_premium_keyboard_lists_plans_and_referral():
+    catalog = SimpleNamespace(
+        ordered=lambda: [
+            SimpleNamespace(key="1m", title="1 месяц", stars=100),
+            SimpleNamespace(key="12m", title="12 месяцев", stars=800),
+        ]
+    )
+
+    markup = premium_keyboard(catalog)
+
+    assert [button.text for row in markup.inline_keyboard for button in row] == [
+        "1 месяц — 100 ⭐",
+        "12 месяцев — 800 ⭐",
+        "📜 История начислений",
+        "🔗 Пригласить друга",
+    ]
+    assert callback_data(markup) == [
+        f"{PREMIUM_BUY_PREFIX}1m",
+        f"{PREMIUM_BUY_PREFIX}12m",
+        PREMIUM_HISTORY_CALLBACK,
+        INVITE_CALLBACK,
+    ]
 
 
 def test_wizard_keyboards_expose_expected_callbacks():
@@ -229,5 +260,7 @@ def test_greeting_and_help_point_to_the_menu_and_command():
     assert "История" in HELP
     assert "«Прогноз»" in HELP
     assert "«Совместимость»" in HELP
+    assert "«Премиум»" in HELP
+    assert "/invite" in HELP
     assert "/contact Мария | супруга | 15.03.1992 14:30 | Казань" in HELP
     assert "/chart 1990-08-15 12:00 Москва" in HELP

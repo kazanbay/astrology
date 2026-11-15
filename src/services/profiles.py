@@ -40,7 +40,8 @@ _PREMIUM_ENV = "PREMIUM_TELEGRAM_IDS"
 
 PREMIUM_REQUIRED_MESSAGE = (
     "👑 Прогнозы для других людей и проверка совместимости — премиум-функция.\n"
-    "Свой собственный прогноз доступен всегда: «📅 Прогноз» → «👤 Мой прогноз»."
+    "Свой собственный прогноз доступен всегда: «📅 Прогноз» → «👤 Мой прогноз».\n"
+    "Оформить премиум можно в разделе «👑 Премиум»."
 )
 
 CONTACT_PERMISSION_MESSAGE = "Контакт не найден или принадлежит другому аккаунту."
@@ -112,9 +113,15 @@ def premium_telegram_ids() -> frozenset[int]:
 
 
 def has_premium(profile: UserProfile, telegram_id: int | str | None = None) -> bool:
-    """Premium flag of the account, including the environment override."""
+    """Premium access: manual flag, paid period, or the environment override."""
     if profile.is_premium:
         return True
+    until = profile.premium_until
+    if until is not None:
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if until > datetime.now(timezone.utc):
+            return True
     identity = telegram_id if telegram_id is not None else profile.telegram_id
     try:
         number = int(identity)  # type: ignore[arg-type]

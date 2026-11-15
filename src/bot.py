@@ -14,7 +14,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, User
+from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery, User
 from dotenv import load_dotenv
 
 from astronomy.calculator import AstronomyError
@@ -27,6 +27,7 @@ from bot_ui import (
     BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
+    BUTTON_PREMIUM,
     BUTTON_SYNASTRY,
     CONTACTS_DELETE_PREFIX,
     CONFIRM_CALLBACK,
@@ -38,6 +39,10 @@ from bot_ui import (
     FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
+    INVITE_CALLBACK,
+    PREMIUM_BUY_PREFIX,
+    PREMIUM_HISTORY_CALLBACK,
+    PREMIUM_MENU_CALLBACK,
     PROFILE_CONFIRM_CALLBACK,
     PROFILE_EDIT_CALLBACK,
     SKIP_NAME_CALLBACK,
@@ -52,6 +57,7 @@ from bot_ui import (
     format_confirmation,
     format_stored_profile,
     main_menu,
+    premium_keyboard,
     profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
@@ -61,6 +67,14 @@ from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
 from services.forecast import ForecastService
 from services.forecast_report import ForecastReportService
+from services.premium import (
+    PremiumCatalog,
+    PremiumConfigError,
+    format_invite_text,
+    format_premium_history,
+    format_premium_status,
+    load_catalog,
+)
 from services.presentation import (
     format_contacts_list,
     format_forecast_text,
@@ -82,6 +96,12 @@ from services.profiles import (
     profile_changes_note,
     resolve_owner_profile,
     save_owner_profile,
+)
+from services.referrals import (
+    apply_referral,
+    get_or_create_referral_code,
+    parse_referral_payload,
+    referral_link,
 )
 from services.synastry import SynastryService
 from storage.birth import (
@@ -148,6 +168,8 @@ def create_dispatcher(
     forecast_service: ForecastService | None = None,
     forecast_report_service: ForecastReportService | None = None,
     synastry_service: SynastryService | None = None,
+    premium_catalog: PremiumCatalog | None = None,
+    bot_username: str | None = None,
 ) -> Dispatcher:
     """Create handlers bound to the single startup instances of the services."""
     dispatcher = Dispatcher()
@@ -346,6 +368,44 @@ def create_dispatcher(
                 # Never lose the report because of one unparsable character.
                 await message.answer(part, disable_web_page_preview=True)
         return True
+
+    @router.message(CommandStart(deep_link=True))
+    async def start_referral(
+        message: Message, command: CommandObject, state: FSMContext, bot: Bot
+    ) -> None:
+        """First contact via an invite link: attribute the account, reward the inviter."""
+        await state.clear()
+        code = parse_referral_payload(command.args)
+        user = message.from_user
+        if code is None or user is None or chart_pipeline is None or premium_catalog is None:
+            await message.answer(GREETING, reply_markup=main_menu())
+            return
+        outcome = None
+        try:
+            existing = await chart_pipeline.store.find_user(telegram_id=user.id)
+            if existing is None:
+                user_id = await chart_pipeline.store.upsert_user(
+                    telegram_id=user.id, first_name=user.first_name, last_name=user.last_name
+                )
+                outcome = await apply_referral(
+                    chart_pipeline.store,
+                    referee_user_id=user_id,
+                    code=code,
+                    bonus_months=premium_catalog.referral_bonus_months,
+                )
+        except Exception:
+            logger.exception("referral registration failed")
+        await message.answer(GREETING, reply_markup=main_menu())
+        if outcome is None or outcome.status != "granted" or not outcome.referrer_telegram_id:
+            return
+        try:
+            await bot.send_message(
+                outcome.referrer_telegram_id,
+                "🎉 По вашей ссылке пришёл новый пользователь!\n"
+                f"Начислено {outcome.bonus_months} мес. премиума.",
+            )
+        except Exception:
+            logger.exception("referral notification failed")
 
     @router.message(CommandStart())
     async def start_handler(message: Message, state: FSMContext) -> None:
@@ -580,6 +640,185 @@ def create_dispatcher(
         await _drop_markup(callback.message)
         if callback.message is not None:
             await start_wizard(callback.message, state)
+
+    def _premium_view(profile: Any) -> tuple[str, Any]:
+        text = "\n\n".join(
+            [
+                format_premium_status(profile),
+                "Премиум даёт: прогнозы для контактов, синастрию и персональные разборы.",
+                "Выберите срок — оплата звёздами Telegram:",
+            ]
+        )
+        return text, premium_keyboard(premium_catalog)
+
+    @router.message(Command("premium"))
+    @router.message(F.text == BUTTON_PREMIUM)
+    async def premium_entry(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if chart_pipeline is None or premium_catalog is None:
+            await message.answer("Магазин премиума временно недоступен.")
+            return
+        user = message.from_user
+        if user is None:
+            return
+        try:
+            profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=user.id)
+        except ProfileError as exc:
+            await message.answer(str(exc), reply_markup=main_menu())
+            return
+        text, markup = _premium_view(profile)
+        await message.answer(text, reply_markup=markup)
+
+    @router.callback_query(F.data == PREMIUM_MENU_CALLBACK)
+    async def premium_menu(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if chart_pipeline is None or premium_catalog is None:
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        text, markup = _premium_view(profile)
+        await _show_inline(callback, text, markup)
+
+    @router.callback_query(F.data == PREMIUM_HISTORY_CALLBACK)
+    async def premium_history(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if chart_pipeline is None:
+            return
+        try:
+            profile = await resolve_owner_profile(
+                chart_pipeline.store, telegram_id=callback.from_user.id
+            )
+        except ProfileError as exc:
+            await _show_inline(callback, str(exc), None)
+            return
+        events = await chart_pipeline.store.list_premium_events(profile.user_id, limit=10)
+        markup = premium_keyboard(premium_catalog) if premium_catalog is not None else None
+        await _show_inline(callback, format_premium_history(events, profile), markup)
+
+    @router.callback_query(F.data.startswith(PREMIUM_BUY_PREFIX))
+    async def premium_buy(callback: CallbackQuery) -> None:
+        key = callback.data[len(PREMIUM_BUY_PREFIX):]
+        plan = premium_catalog.get(key) if premium_catalog is not None else None
+        if plan is None:
+            await callback.answer(
+                "Тариф недоступен — откройте «👑 Премиум» заново.", show_alert=True
+            )
+            return
+        await callback.answer()
+        if callback.message is None:
+            return
+        try:
+            await callback.message.answer_invoice(
+                title=f"Премиум: {plan.title}",
+                description=(
+                    f"Доступ на {plan.months} мес.: прогнозы для контактов, синастрия "
+                    "и персональные разборы."
+                ),
+                payload=f"premium:{plan.key}:{callback.from_user.id}",
+                currency="XTR",
+                prices=[LabeledPrice(label=plan.title, amount=plan.stars)],
+            )
+        except TelegramBadRequest:
+            logger.exception("invoice creation failed")
+            await callback.message.answer("Не удалось выставить счёт. Попробуйте позже.")
+
+    @router.pre_checkout_query()
+    async def pre_checkout(query: PreCheckoutQuery) -> None:
+        parts = (query.invoice_payload or "").split(":")
+        valid = (
+            len(parts) == 3
+            and parts[0] == "premium"
+            and premium_catalog is not None
+            and premium_catalog.get(parts[1]) is not None
+        )
+        await query.answer(
+            ok=bool(valid),
+            error_message=None if valid else "Тариф устарел — выберите заново в «👑 Премиум».",
+        )
+
+    @router.message(F.successful_payment)
+    async def premium_paid(message: Message) -> None:
+        payment = message.successful_payment
+        user = message.from_user
+        if payment is None or user is None or chart_pipeline is None:
+            return
+        parts = (payment.invoice_payload or "").split(":")
+        plan = (
+            premium_catalog.get(parts[1])
+            if premium_catalog is not None and len(parts) == 3 and parts[0] == "premium"
+            else None
+        )
+        if plan is None:
+            await message.answer(
+                "Оплата получена, но тариф не распознан — напишите администратору."
+            )
+            return
+        try:
+            user_id = await chart_pipeline.store.upsert_user(
+                telegram_id=user.id, first_name=user.first_name, last_name=user.last_name
+            )
+            until = await chart_pipeline.store.complete_payment(
+                charge_id=payment.telegram_payment_charge_id,
+                user_id=user_id,
+                plan_key=plan.key,
+                months=plan.months,
+                stars=int(payment.total_amount),
+                reason=f"Тариф «{plan.title}» ({plan.key})",
+            )
+        except Exception:
+            logger.exception("payment processing failed")
+            await message.answer(
+                "Оплата прошла, но начисление не удалось — напишите администратору."
+            )
+            return
+        if until is None:
+            await message.answer("Этот платёж уже обработан.", reply_markup=main_menu())
+            return
+        await message.answer(
+            f"✅ Оплата получена: {plan.title}.\n"
+            f"Премиум активен до {until.strftime('%d.%m.%Y')}.",
+            reply_markup=main_menu(),
+        )
+
+    async def _invite_text(telegram_id: int) -> str | None:
+        if chart_pipeline is None or premium_catalog is None or not bot_username:
+            return None
+        try:
+            profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=telegram_id)
+        except ProfileError as exc:
+            return str(exc)
+        code = await get_or_create_referral_code(chart_pipeline.store, profile.user_id)
+        stats = await chart_pipeline.store.referral_stats(profile.user_id)
+        return format_invite_text(
+            link=referral_link(bot_username, code),
+            invited=stats["invited"],
+            bonus_months=stats["bonus_months"],
+            reward_months=premium_catalog.referral_bonus_months,
+        )
+
+    @router.message(Command("invite"))
+    async def invite_command(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        user = message.from_user
+        if user is None:
+            return
+        text = await _invite_text(user.id)
+        await message.answer(
+            text or "Реферальная программа временно недоступна.", reply_markup=main_menu()
+        )
+
+    @router.callback_query(F.data == INVITE_CALLBACK)
+    async def invite_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        text = await _invite_text(callback.from_user.id)
+        await _show_inline(
+            callback, text or "Реферальная программа временно недоступна.", None
+        )
 
     @router.message(Command("forecast"))
     @router.message(F.text == BUTTON_FORECAST)
@@ -917,6 +1156,17 @@ async def main() -> None:
         raise
 
     bot = Bot(token=token)
+    premium_catalog = None
+    try:
+        premium_catalog = load_catalog()
+    except PremiumConfigError:
+        logger.exception("premium plans are unavailable; the shop is disabled")
+    bot_username = None
+    try:
+        bot_username = (await bot.get_me()).username
+    except Exception:
+        logger.exception("could not resolve the bot username; referral links are disabled")
+
     store: PostgresChartStore | None = None
     chart_pipeline: ChartPipeline | None = None
     report_service: ChartReportService | None = None
@@ -948,6 +1198,8 @@ async def main() -> None:
         forecast_service,
         forecast_report_service,
         synastry_service,
+        premium_catalog,
+        bot_username,
     )
     try:
         await dispatcher.start_polling(bot)

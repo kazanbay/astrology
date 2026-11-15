@@ -1,0 +1,10 @@
+{
+  "referral_bonus_months": 1,
+  "plans": {
+    "1m": {"months": 1, "stars": 100, "title": "1 месяц"},
+    "3m": {"months": 3, "stars": 250, "title": "3 месяца"},
+    "6m": {"months": 6, "stars": 450, "title": "6 месяцев"},
+    "12m": {"months": 12, "stars": 800, "title": "12 месяцев"},
+    "24m": {"months": 24, "stars": 1400, "title": "24 месяца"}
+  }
+}

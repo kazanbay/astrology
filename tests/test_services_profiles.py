@@ -1,7 +1,7 @@
 """Unit tests for profile persistence, premium permissions and the /contact parser."""
 
 import asyncio
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 
@@ -195,6 +195,14 @@ def test_resolve_owner_profile_found_and_missing():
 def test_has_premium_uses_database_flag():
     assert has_premium(owner_profile(is_premium=True)) is True
     assert has_premium(owner_profile(is_premium=False)) is False
+
+
+def test_has_premium_uses_the_paid_period():
+    future = datetime.now(timezone.utc) + timedelta(days=10)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+
+    assert has_premium(owner_profile(premium_until=future)) is True
+    assert has_premium(owner_profile(premium_until=past)) is False
 
 
 def test_has_premium_environment_override(monkeypatch):

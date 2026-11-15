@@ -143,7 +143,10 @@ async def _profile_contacts_scenario() -> None:
     store = await PostgresChartStore.connect(max_size=2)
     user_id: int | None = None
     other_id: int | None = None
+    invited_id: int | None = None
     try:
+        for stale_id in (TEST_TELEGRAM_ID, TEST_TELEGRAM_ID + 1, TEST_TELEGRAM_ID + 2):
+            await store.pool.execute("DELETE FROM users WHERE telegram_id = $1", stale_id)
         user_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест")
         birth = BirthData(
             dt_utc=datetime(1990, 8, 15, 8, 0, tzinfo=timezone.utc),
@@ -301,11 +304,88 @@ async def _profile_contacts_scenario() -> None:
         )
         reset = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
         assert reset is not None and reset.profile_changes_count == 1
+
+        # Paid premium extends by whole months and leaves an audit event.
+        until_first = await store.grant_premium(
+            user_id, 1, source="manual", reason="Интеграционный тест"
+        )
+        assert until_first is not None
+        until_second = await store.grant_premium(
+            user_id,
+            2,
+            source="referral",
+            actor_user_id=other_id,
+            reference="testcode1",
+            reason="Реферальный бонус",
+        )
+        assert until_second is not None and until_second > until_first
+
+        # Stars payments are idempotent and audited as telegram_stars.
+        charge_id = f"test-charge-{uuid.uuid4()}"
+        first_payment = await store.complete_payment(
+            charge_id=charge_id,
+            user_id=user_id,
+            plan_key="3m",
+            months=3,
+            stars=250,
+            reason="Тариф «3 месяца» (3m)",
+        )
+        assert first_payment is not None and first_payment > until_second
+        repeat_payment = await store.complete_payment(
+            charge_id=charge_id,
+            user_id=user_id,
+            plan_key="3m",
+            months=3,
+            stars=250,
+        )
+        assert repeat_payment is None
+
+        # Referral code is allocated once and resolves back to the owner.
+        await store.pool.execute(
+            "UPDATE users SET referral_code = NULL WHERE user_id = $1", user_id
+        )
+        code = await store.ensure_referral_code(user_id, "testcode1")
+        assert code == "testcode1"
+        assert await store.ensure_referral_code(user_id, "othercode") is None
+        assert await store.get_referral_code(user_id) == "testcode1"
+        referrer = await store.find_user_by_referral_code("testcode1")
+        assert referrer is not None and referrer[0] == user_id
+
+        invited_id = await store.upsert_user(
+            telegram_id=TEST_TELEGRAM_ID + 2, first_name="Гость"
+        )
+        assert (
+            await store.create_referral(
+                referrer_user_id=user_id, referee_user_id=invited_id, bonus_months=1
+            )
+            is True
+        )
+        assert (
+            await store.create_referral(
+                referrer_user_id=user_id, referee_user_id=invited_id, bonus_months=1
+            )
+            is False
+        )
+        stats = await store.referral_stats(user_id)
+        assert stats == {"invited": 1, "bonus_months": 1}
+
+        events = await store.list_premium_events(user_id, limit=10)
+        assert [event.source for event in events] == [
+            "telegram_stars",
+            "referral",
+            "manual",
+        ]
+        assert events[0].stars == 250 and events[0].months == 3
+        assert events[0].premium_until_before is not None
+        assert events[1].actor_user_id == other_id
+        assert events[1].reference == "testcode1"
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
         if other_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", other_id)
+        if invited_id is not None:
+            await store.pool.execute("DELETE FROM users WHERE user_id = $1", invited_id)
         await store.close()
 
 

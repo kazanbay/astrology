@@ -22,6 +22,7 @@ from storage.birth import BirthData, local_to_utc
 BUTTON_CHART = "🔮 Рассчитать карту"
 BUTTON_FORECAST = "📅 Прогноз"
 BUTTON_SYNASTRY = "💞 Совместимость"
+BUTTON_PREMIUM = "👑 Премиум"
 BUTTON_HISTORY = "🕘 История"
 BUTTON_HELP = "❓ Помощь"
 
@@ -34,6 +35,10 @@ PROFILE_CONFIRM_CALLBACK = "profile:confirm"
 PROFILE_EDIT_CALLBACK = "profile:edit"
 
 FORECAST_PROFILE_CALLBACK = "forecast:profile"
+PREMIUM_MENU_CALLBACK = "premium:menu"
+PREMIUM_BUY_PREFIX = "premium:buy:"
+PREMIUM_HISTORY_CALLBACK = "premium:history"
+INVITE_CALLBACK = "invite:show"
 FORECAST_SELF_CALLBACK = "forecast:profile:self"
 FORECAST_CONTACTS_CALLBACK = "forecast:profile:contacts"
 FORECAST_PICK_PREFIX = "forecast:pick:"
@@ -64,11 +69,13 @@ HELP = (
     "🔮 «Рассчитать карту» — пошаговый ввод данных рождения и разбор карты.\n"
     "📅 «Прогноз» — транзиты на день, неделю, месяц или год по вашему профилю.\n"
     "💞 «Совместимость» — синастрия с человеком из вашего списка (премиум).\n"
+    "👑 «Премиум» — подписка за звёзды Telegram: 1, 3, 6, 12 или 24 месяца.\n"
     "🕘 «История» — ваши прошлые запросы.\n"
     "💬 Любой вопрос текстом — поиск ответа по книгам.\n\n"
     "Контакты для прогнозов и совместимости:\n"
     "/contact Мария | супруга | 15.03.1992 14:30 | Казань\n"
-    "/contacts — список и удаление.\n\n"
+    "/contacts — список и удаление.\n"
+    "Приглашение друга: /invite — за каждого нового пользователя +1 мес. премиума.\n\n"
     "Быстрый расчёт одной командой:\n"
     "/chart 1990-08-15 12:00 Москва\n\n"
     "Важно: время рождения нужно указывать местное, по часам места рождения. "
@@ -103,11 +110,29 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BUTTON_CHART), KeyboardButton(text=BUTTON_FORECAST)],
             [KeyboardButton(text=BUTTON_SYNASTRY), KeyboardButton(text=BUTTON_HISTORY)],
-            [KeyboardButton(text=BUTTON_HELP)],
+            [KeyboardButton(text=BUTTON_PREMIUM), KeyboardButton(text=BUTTON_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
     )
+
+
+def premium_keyboard(catalog: Any) -> InlineKeyboardMarkup:
+    """One button per premium term plus the referral shortcut."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{plan.title} — {plan.stars} ⭐",
+                callback_data=f"{PREMIUM_BUY_PREFIX}{plan.key}",
+            )
+        ]
+        for plan in catalog.ordered()
+    ]
+    rows.append(
+        [InlineKeyboardButton(text="📜 История начислений", callback_data=PREMIUM_HISTORY_CALLBACK)]
+    )
+    rows.append([InlineKeyboardButton(text="🔗 Пригласить друга", callback_data=INVITE_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def skip_name_keyboard() -> InlineKeyboardMarkup:

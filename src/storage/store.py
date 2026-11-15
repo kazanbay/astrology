@@ -36,6 +36,9 @@ EMAIL_LIMIT = 255
 CONTACT_NAME_LIMIT = 255
 CONTACT_RELATION_LIMIT = 100
 
+#: Allowed audit sources of a premium grant.
+PREMIUM_SOURCES: tuple[str, ...] = ("manual", "referral", "telegram_stars", "other")
+
 UPSERT_USER_SQL = """
 WITH inserted AS (
     INSERT INTO users (telegram_id, email, first_name, last_name, display_name)
@@ -135,7 +138,7 @@ SELECT_PROFILE_SQL = """
 SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_premium,
        birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
        birth_timezone, birth_city, birth_chart_hash,
-       profile_changes_count, profile_changes_period
+       profile_changes_count, profile_changes_period, premium_until, referral_code
   FROM users
  WHERE ($1::bigint IS NOT NULL AND telegram_id = $1::bigint)
     OR ($2::text IS NOT NULL AND email = $2::text)
@@ -168,6 +171,90 @@ UPDATE users
 """
 
 SET_PREMIUM_SQL = "UPDATE users SET is_premium = $2 WHERE user_id = $1"
+
+GRANT_PREMIUM_SQL = """
+WITH before AS (
+    SELECT user_id, premium_until FROM users WHERE user_id = $1
+), updated AS (
+    UPDATE users
+       SET premium_until = GREATEST(COALESCE(premium_until, now()), now())
+                          + make_interval(months => $2::int)
+     WHERE user_id = $1
+    RETURNING user_id, premium_until
+), logged AS (
+    INSERT INTO premium_events
+           (user_id, source, months, stars, plan_key, actor_user_id, reference, reason,
+            premium_until_before, premium_until_after)
+    SELECT updated.user_id, $3, $2::int, $4::int, $5, $6::int, $7, $8,
+           before.premium_until, updated.premium_until
+      FROM updated LEFT JOIN before ON before.user_id = updated.user_id
+    RETURNING event_id
+)
+SELECT premium_until FROM updated
+"""
+
+ENSURE_REFERRAL_CODE_SQL = """
+UPDATE users SET referral_code = $2
+ WHERE user_id = $1 AND referral_code IS NULL
+RETURNING referral_code
+"""
+
+GET_REFERRAL_CODE_SQL = "SELECT referral_code FROM users WHERE user_id = $1"
+
+FIND_REFERRER_SQL = """
+SELECT user_id, telegram_id FROM users WHERE referral_code = $1
+"""
+
+CREATE_REFERRAL_SQL = """
+WITH inserted AS (
+    INSERT INTO referrals (referrer_user_id, referee_user_id, bonus_months)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (referee_user_id) DO NOTHING
+    RETURNING referral_id
+)
+SELECT referral_id FROM inserted
+"""
+
+REFERRAL_STATS_SQL = """
+SELECT count(*) AS invited, COALESCE(sum(bonus_months), 0) AS bonus_months
+  FROM referrals
+ WHERE referrer_user_id = $1
+"""
+
+COMPLETE_PAYMENT_SQL = """
+WITH inserted AS (
+    INSERT INTO payments (charge_id, user_id, plan_key, months, stars)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (charge_id) DO NOTHING
+    RETURNING payment_id
+), before AS (
+    SELECT user_id, premium_until FROM users WHERE user_id = $2
+), updated AS (
+    UPDATE users
+       SET premium_until = GREATEST(COALESCE(premium_until, now()), now())
+                          + make_interval(months => $4::int)
+     WHERE user_id = $2 AND EXISTS (SELECT 1 FROM inserted)
+    RETURNING user_id, premium_until
+), logged AS (
+    INSERT INTO premium_events
+           (user_id, source, months, stars, plan_key, actor_user_id, reference, reason,
+            premium_until_before, premium_until_after)
+    SELECT updated.user_id, 'telegram_stars', $4::int, $5::int, $3, NULL, $1, $6,
+           before.premium_until, updated.premium_until
+      FROM updated LEFT JOIN before ON before.user_id = updated.user_id
+    RETURNING event_id
+)
+SELECT premium_until FROM updated
+"""
+
+SELECT_PREMIUM_EVENTS_SQL = """
+SELECT event_id, user_id, source, months, stars, plan_key, actor_user_id,
+       reference, reason, premium_until_before, premium_until_after, created_at
+  FROM premium_events
+ WHERE user_id = $1
+ ORDER BY created_at DESC, event_id DESC
+ LIMIT $2
+"""
 
 SELECT_CONTACTS_SQL = """
 SELECT contact_id, user_id, name, relation, birth_date, birth_time, birth_time_unknown,
@@ -249,6 +336,50 @@ class ForecastReportRecord:
 
 
 @dataclass(frozen=True)
+class PremiumEvent:
+    """One ``premium_events`` row: an audited premium grant."""
+
+    event_id: int
+    user_id: int
+    source: str
+    months: int
+    stars: int | None = None
+    plan_key: str | None = None
+    actor_user_id: int | None = None
+    reference: str | None = None
+    reason: str | None = None
+    premium_until_before: datetime | None = None
+    premium_until_after: datetime | None = None
+    created_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form for tools, logs and admin views."""
+        return {
+            "event_id": self.event_id,
+            "source": self.source,
+            "months": self.months,
+            "stars": self.stars,
+            "plan_key": self.plan_key,
+            "actor_user_id": self.actor_user_id,
+            "reference": self.reference,
+            "reason": self.reason,
+            "premium_until_before": (
+                self.premium_until_before.isoformat()
+                if self.premium_until_before is not None
+                else None
+            ),
+            "premium_until_after": (
+                self.premium_until_after.isoformat()
+                if self.premium_until_after is not None
+                else None
+            ),
+            "created_at": (
+                self.created_at.isoformat() if self.created_at is not None else None
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class NatalProfile:
     """Natal data of one person as stored on ``users`` (the owner's profile)."""
 
@@ -285,6 +416,10 @@ class UserProfile:
     profile_changes_count: int = 0
     #: First day of the month the counter belongs to (UTC).
     profile_changes_period: date | None = None
+    #: Paid premium period end (UTC); ``None`` for free accounts.
+    premium_until: datetime | None = None
+    #: Short public token used in the referral link.
+    referral_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready form for LangGraph tools and logs (dates as ISO strings)."""
@@ -304,6 +439,10 @@ class UserProfile:
                 if self.profile_changes_period is not None
                 else None
             ),
+            "premium_until": (
+                self.premium_until.isoformat() if self.premium_until is not None else None
+            ),
+            "referral_code": self.referral_code,
         }
         for key in ("birth_date", "birth_time"):
             value = getattr(self, key)
@@ -424,6 +563,48 @@ class ChartStore(Protocol):
     async def add_contact(self, user_id: int, contact: ContactInput) -> ContactProfile: ...
 
     async def delete_contact(self, contact_id: int, user_id: int) -> bool: ...
+
+    async def grant_premium(
+        self,
+        user_id: int,
+        months: int,
+        *,
+        source: str = "other",
+        stars: int | None = None,
+        plan_key: str | None = None,
+        actor_user_id: int | None = None,
+        reference: str | None = None,
+        reason: str | None = None,
+    ) -> datetime | None: ...
+
+    async def ensure_referral_code(self, user_id: int, code: str) -> str | None: ...
+
+    async def get_referral_code(self, user_id: int) -> str | None: ...
+
+    async def find_user_by_referral_code(
+        self, code: str
+    ) -> tuple[int, int | None] | None: ...
+
+    async def create_referral(
+        self, *, referrer_user_id: int, referee_user_id: int, bonus_months: int
+    ) -> bool: ...
+
+    async def referral_stats(self, user_id: int) -> dict[str, int]: ...
+
+    async def complete_payment(
+        self,
+        *,
+        charge_id: str,
+        user_id: int,
+        plan_key: str,
+        months: int,
+        stars: int,
+        reason: str | None = None,
+    ) -> datetime | None: ...
+
+    async def list_premium_events(
+        self, user_id: int, *, limit: int = 20
+    ) -> list[PremiumEvent]: ...
 
 
 async def _configure_connection(connection: asyncpg.Connection) -> None:
@@ -762,6 +943,8 @@ class PostgresChartStore:
             birth_chart_hash=row["birth_chart_hash"],
             profile_changes_count=int(row["profile_changes_count"] or 0),
             profile_changes_period=row["profile_changes_period"],
+            premium_until=row["premium_until"],
+            referral_code=row["referral_code"],
         )
 
     async def save_user_natal_profile(
@@ -846,5 +1029,144 @@ class PostgresChartStore:
         """Delete a contact of this user; ``False`` when there was nothing to delete."""
         status = await self.pool.execute(DELETE_CONTACT_SQL, int(contact_id), int(user_id))
         return status.endswith(" 1")
+
+    async def grant_premium(
+        self,
+        user_id: int,
+        months: int,
+        *,
+        source: str = "other",
+        stars: int | None = None,
+        plan_key: str | None = None,
+        actor_user_id: int | None = None,
+        reference: str | None = None,
+        reason: str | None = None,
+    ) -> datetime | None:
+        """Extend the paid period by whole months and write the audit event.
+
+        ``None`` means no such user. ``source`` names the mechanism (manual /
+        referral / telegram_stars / other); ``actor_user_id`` is the account
+        that caused the grant (the referee for a referral bonus), ``reference``
+        holds the charge id or referral code, ``reason`` is free text.
+        """
+        if int(months) < 0:
+            raise ValueError("months must not be negative")
+        if source not in PREMIUM_SOURCES:
+            raise ValueError(f"source must be one of {', '.join(PREMIUM_SOURCES)}")
+        until = await self.pool.fetchval(
+            GRANT_PREMIUM_SQL,
+            int(user_id),
+            int(months),
+            source,
+            stars,
+            plan_key,
+            actor_user_id,
+            reference,
+            reason,
+        )
+        return until
+
+    async def ensure_referral_code(self, user_id: int, code: str) -> str | None:
+        """Set the referral code once; ``None`` when the account already has one."""
+        value = str(code).strip()
+        if not value or len(value) > 16:
+            raise ValueError("referral code must be 1-16 characters")
+        created = await self.pool.fetchval(ENSURE_REFERRAL_CODE_SQL, int(user_id), value)
+        return str(created) if created is not None else None
+
+    async def get_referral_code(self, user_id: int) -> str | None:
+        """Return the account's referral code, or ``None``."""
+        code = await self.pool.fetchval(GET_REFERRAL_CODE_SQL, int(user_id))
+        return str(code) if code is not None else None
+
+    async def find_user_by_referral_code(
+        self, code: str
+    ) -> tuple[int, int | None] | None:
+        """Resolve a referral code to ``(user_id, telegram_id)``."""
+        value = str(code).strip()
+        if not value:
+            return None
+        row = await self.pool.fetchrow(FIND_REFERRER_SQL, value)
+        if row is None:
+            return None
+        return int(row["user_id"]), row["telegram_id"]
+
+    async def create_referral(
+        self, *, referrer_user_id: int, referee_user_id: int, bonus_months: int
+    ) -> bool:
+        """Record one attribution; ``False`` means the referee was already invited."""
+        if int(bonus_months) < 0:
+            raise ValueError("bonus_months must not be negative")
+        created = await self.pool.fetchval(
+            CREATE_REFERRAL_SQL, int(referrer_user_id), int(referee_user_id), int(bonus_months)
+        )
+        return created is not None
+
+    async def referral_stats(self, user_id: int) -> dict[str, int]:
+        """Invited users and the bonus months they brought."""
+        row = await self.pool.fetchrow(REFERRAL_STATS_SQL, int(user_id))
+        if row is None:  # pragma: no cover - aggregate always returns a row
+            return {"invited": 0, "bonus_months": 0}
+        return {
+            "invited": int(row["invited"] or 0),
+            "bonus_months": int(row["bonus_months"] or 0),
+        }
+
+    async def complete_payment(
+        self,
+        *,
+        charge_id: str,
+        user_id: int,
+        plan_key: str,
+        months: int,
+        stars: int,
+        reason: str | None = None,
+    ) -> datetime | None:
+        """Record a Stars payment and extend premium in one transaction.
+
+        ``charge_id`` is the idempotency key: a repeated notification inserts
+        nothing and returns ``None`` instead of granting the term twice. Every
+        successful payment leaves a ``telegram_stars`` row in premium_events.
+        """
+        charge = str(charge_id).strip()
+        if not charge:
+            raise ValueError("charge_id must be a non-empty string")
+        if int(months) < 1 or int(stars) < 1:
+            raise ValueError("months and stars must be positive")
+        until = await self.pool.fetchval(
+            COMPLETE_PAYMENT_SQL,
+            charge,
+            int(user_id),
+            str(plan_key),
+            int(months),
+            int(stars),
+            reason,
+        )
+        return until
+
+    async def list_premium_events(
+        self, user_id: int, *, limit: int = 20
+    ) -> list[PremiumEvent]:
+        """Return the latest premium grants of one account, newest first."""
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        rows = await self.pool.fetch(SELECT_PREMIUM_EVENTS_SQL, int(user_id), int(limit))
+        return [
+            PremiumEvent(
+                event_id=int(row["event_id"]),
+                user_id=int(row["user_id"]),
+                source=str(row["source"]),
+                months=int(row["months"]),
+                stars=row["stars"],
+                plan_key=row["plan_key"],
+                actor_user_id=row["actor_user_id"],
+                reference=row["reference"],
+                reason=row["reason"],
+                premium_until_before=row["premium_until_before"],
+                premium_until_after=row["premium_until_after"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
 

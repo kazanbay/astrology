@@ -79,6 +79,54 @@ DDL_STATEMENTS: Sequence[str] = (
     # the first day of the month the counter belongs to (UTC).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_changes_count INT NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_changes_period DATE",
+    # --- Premium subscriptions, referrals and Telegram Stars payments -----
+    # ``premium_until`` is the paid period; ``users.is_premium`` stays a
+    # manual/permanent flag (gifts, staff). ``referral_code`` is the public
+    # token of the invite link.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until TIMESTAMPTZ",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(16)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code "
+    "ON users (referral_code) WHERE referral_code IS NOT NULL",
+    # One referee per account: the unique index makes a double reward impossible.
+    """CREATE TABLE IF NOT EXISTS referrals (
+        referral_id SERIAL PRIMARY KEY,
+        referrer_user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        referee_user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        bonus_months INT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (referee_user_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals (referrer_user_id)",
+    # Telegram Stars payments: charge_id is the idempotency key.
+    """CREATE TABLE IF NOT EXISTS payments (
+        payment_id SERIAL PRIMARY KEY,
+        charge_id VARCHAR(128) UNIQUE NOT NULL,
+        user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        plan_key VARCHAR(32) NOT NULL,
+        months INT NOT NULL,
+        stars INT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_payments_user ON payments (user_id)",
+    # Audit trail of every premium grant: who received it, on what basis, for
+    # how long and what the period became. ``source`` is one of manual /
+    # referral / telegram_stars / other.
+    """CREATE TABLE IF NOT EXISTS premium_events (
+        event_id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        source VARCHAR(32) NOT NULL,
+        months INT NOT NULL,
+        stars INT,
+        plan_key VARCHAR(32),
+        actor_user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
+        reference VARCHAR(128),
+        reason TEXT,
+        premium_until_before TIMESTAMPTZ,
+        premium_until_after TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_premium_events_user "
+    "ON premium_events (user_id, created_at DESC)",
     # 2. Cache shared by every user with the same birth data (twins included).
     #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
     #    language, so one row holds both the ephemeris snapshot and the exact
