@@ -30,6 +30,9 @@ UNKNOWN_TIME_CALLBACK = "wizard:unknown_time"
 CONFIRM_CALLBACK = "wizard:confirm"
 EDIT_CALLBACK = "wizard:edit"
 
+PROFILE_CONFIRM_CALLBACK = "profile:confirm"
+PROFILE_EDIT_CALLBACK = "profile:edit"
+
 FORECAST_PROFILE_CALLBACK = "forecast:profile"
 FORECAST_SELF_CALLBACK = "forecast:profile:self"
 FORECAST_CONTACTS_CALLBACK = "forecast:profile:contacts"
@@ -130,6 +133,16 @@ def confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def profile_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Card of the stored profile: recalculate or open the wizard."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Рассчитать", callback_data=PROFILE_CONFIRM_CALLBACK)],
+            [InlineKeyboardButton(text="✏️ Изменить данные", callback_data=PROFILE_EDIT_CALLBACK)],
+        ]
+    )
+
+
 def forecast_profile_keyboard() -> InlineKeyboardMarkup:
     """Who the forecast is built for: the owner (free) or a contact (premium)."""
     return InlineKeyboardMarkup(
@@ -197,6 +210,7 @@ def format_confirmation(
     timezone_name: str | None,
     place: dict[str, Any],
     time_unknown: bool = False,
+    note: str | None = None,
 ) -> str:
     """Render the "check your data" message before the expensive calculation."""
     moment = date.fromisoformat(birth_date)
@@ -214,7 +228,27 @@ def format_confirmation(
     ]
     if time_unknown:
         lines += ["", "⚠️ Без точного времени дома и ASC могут быть неточными."]
+    if note:
+        lines += ["", note]
     return "\n".join(lines)
+
+
+def format_stored_profile(profile: Any, *, note: str | None = None) -> str:
+    """Confirmation card built from the stored account profile.
+
+    Used when the user re-opens «🔮 Рассчитать карту»: the wizard is skipped and
+    the previously saved data is shown for confirmation.
+    """
+    birth_time = profile.birth_time or time(12, 0)
+    return format_confirmation(
+        name=profile.display_name,
+        birth_date=profile.birth_date.isoformat(),
+        birth_time=birth_time.strftime("%H:%M"),
+        timezone_name=profile.birth_timezone,
+        place={"display_name": profile.birth_city},
+        time_unknown=bool(profile.birth_time_unknown),
+        note=note,
+    )
 
 
 def build_birth_data(profile: Mapping[str, Any], *, house_system: str = "P") -> BirthData:

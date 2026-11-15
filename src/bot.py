@@ -38,6 +38,8 @@ from bot_ui import (
     FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
+    PROFILE_CONFIRM_CALLBACK,
+    PROFILE_EDIT_CALLBACK,
     SKIP_NAME_CALLBACK,
     SYNASTRY_PREFIX,
     UNKNOWN_TIME_CALLBACK,
@@ -48,7 +50,9 @@ from bot_ui import (
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_stored_profile,
     main_menu,
+    profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
 )
@@ -66,10 +70,15 @@ from services.profiles import (
     PREMIUM_REQUIRED_MESSAGE,
     ContactPermissionError,
     PremiumRequiredError,
+    ProfileChangeLimitError,
     ProfileError,
+    birth_data_from_profile,
     create_contact_from_command,
+    ensure_birth_change_allowed,
     has_premium,
+    natal_data_present,
     parse_contact_command,
+    profile_changes_note,
     resolve_owner_profile,
     save_owner_profile,
 )
@@ -174,10 +183,44 @@ def create_dispatcher(
         contacts = await chart_pipeline.store.list_contacts(profile.user_id)
         return contacts, None
 
+    async def _report_is_cached(service: ChartReportService, chart_hash: str) -> bool:
+        """True when the report for this chart is stored already (no LLM needed)."""
+        try:
+            generation_id = service.generation_id(chart_hash)
+            return await service.store.get_generation(generation_id) is not None
+        except Exception:
+            logger.exception("report cache probe failed")
+            return False
+
     async def start_wizard(message: Message, state: FSMContext) -> None:
         await state.clear()
         await state.set_state(ChartForm.name)
         await message.answer(ASK_NAME, reply_markup=skip_name_keyboard())
+
+    async def start_chart_flow(message: Message, state: FSMContext) -> None:
+        """Open the chart card: reuse the stored profile when it exists.
+
+        A returning user lands on the confirmation card with the saved data
+        instead of retyping name, date, time and place; the wizard opens only
+        for a first-time profile or via «✏️ Изменить данные».
+        """
+        await state.clear()
+        profile = None
+        if chart_pipeline is not None and message.from_user is not None:
+            try:
+                profile = await chart_pipeline.store.get_user_profile(
+                    telegram_id=message.from_user.id
+                )
+            except Exception:
+                logger.exception("profile lookup failed")
+        if profile is not None and natal_data_present(profile):
+            await message.answer(
+                format_stored_profile(profile, note=profile_changes_note(profile)),
+                reply_markup=profile_confirm_keyboard(),
+                disable_web_page_preview=True,
+            )
+            return
+        await start_wizard(message, state)
 
     async def send_history(message: Message) -> None:
         if chart_pipeline is None:
@@ -214,6 +257,20 @@ def create_dispatcher(
             await message.answer("Расчёт карты недоступен: не настроено подключение к PostgreSQL.")
             return False
 
+        profile = None
+        try:
+            profile = await chart_pipeline.store.get_user_profile(telegram_id=user.id)
+        except Exception:
+            logger.exception("profile lookup failed")
+        if profile is not None:
+            # Fail fast before the expensive calculation: the monthly change
+            # limit protects the profile (and the LLM budget) from churn.
+            try:
+                ensure_birth_change_allowed(profile, birth, time_unknown=time_unknown)
+            except ProfileChangeLimitError as exc:
+                await message.answer(str(exc), reply_markup=main_menu())
+                return False
+
         await message.answer(
             "Считаю карту и подбираю разделы из книг…\n"
             "Первый разбор занимает около минуты."
@@ -241,8 +298,14 @@ def create_dispatcher(
         # every successful chart request refreshes the owner's natal profile.
         try:
             await save_owner_profile(
-                chart_pipeline.store, result.user_id, birth, time_unknown=time_unknown
+                chart_pipeline.store,
+                result.user_id,
+                birth,
+                time_unknown=time_unknown,
+                profile=profile,
             )
+        except ProfileChangeLimitError as exc:
+            await message.answer(str(exc))
         except Exception:
             logger.exception("owner natal profile save failed")
 
@@ -258,7 +321,10 @@ def create_dispatcher(
             await _send_previews(message, result.chunks)
             return True
 
-        await message.answer("Готовлю разбор карты…")
+        # Unchanged data must not trigger an LLM call: probe the report cache
+        # first and skip the "generating" notice when the text is already there.
+        if not await _report_is_cached(report_service, result.chart_hash):
+            await message.answer("Готовлю разбор карты…")
         try:
             report = await report_service.get_or_generate(result)
         except Exception:
@@ -296,7 +362,7 @@ def create_dispatcher(
 
     @router.message(F.text == BUTTON_CHART)
     async def chart_button(message: Message, state: FSMContext) -> None:
-        await start_wizard(message, state)
+        await start_chart_flow(message, state)
 
     @router.message(Command("history"))
     @router.message(F.text == BUTTON_HISTORY)
@@ -312,7 +378,7 @@ def create_dispatcher(
             await message.answer("Расчёт карты недоступен: не настроено подключение к PostgreSQL.")
             return
         if not command.args:
-            await start_wizard(message, state)
+            await start_chart_flow(message, state)
             return
 
         await state.clear()
@@ -471,6 +537,47 @@ def create_dispatcher(
             display_name=data.get("name"),
             time_unknown=bool(data.get("time_unknown")),
         )
+
+    @router.callback_query(F.data == PROFILE_CONFIRM_CALLBACK)
+    async def profile_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+        """Recalculate from the stored profile: no wizard and no re-geocoding."""
+        await callback.answer()
+        await state.clear()
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            profile = await chart_pipeline.store.get_user_profile(
+                telegram_id=callback.from_user.id
+            )
+        except Exception:
+            logger.exception("profile lookup failed")
+            profile = None
+        if profile is None or not natal_data_present(profile):
+            await _show_inline(
+                callback, "Профиль не найден — заполните данные рождения заново.", None
+            )
+            await start_wizard(callback.message, state)
+            return
+        try:
+            birth = birth_data_from_profile(profile)
+        except (ProfileError, BirthInputError) as exc:
+            await _show_inline(callback, f"Данные профиля неполны: {exc}", None)
+            return
+        await _drop_markup(callback.message)
+        await run_chart(
+            callback.message,
+            callback.from_user,
+            birth,
+            display_name=profile.display_name,
+            time_unknown=profile.birth_time_unknown,
+        )
+
+    @router.callback_query(F.data == PROFILE_EDIT_CALLBACK)
+    async def profile_edit(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        await _drop_markup(callback.message)
+        if callback.message is not None:
+            await start_wizard(callback.message, state)
 
     @router.message(Command("forecast"))
     @router.message(F.text == BUTTON_FORECAST)

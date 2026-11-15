@@ -9,9 +9,10 @@ through the bot or a LangGraph tool call.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import Any, Protocol
 
 from storage.birth import (
@@ -53,6 +54,18 @@ PROFILE_NATAL_MISSING_MESSAGE = (
     "и я сохраню их для прогнозов."
 )
 
+#: Env knob: natal-profile changes allowed per calendar month. ``0`` or a
+#: negative value disables the limit; invalid values fall back to the default.
+PROFILE_CHANGE_LIMIT_ENV = "PROFILE_CHANGES_PER_MONTH"
+DEFAULT_PROFILE_CHANGE_LIMIT = 3
+
+PROFILE_CHANGE_LIMIT_MESSAGE = (
+    "Данные рождения можно менять не чаще {limit} раз в месяц. "
+    "Лимит на этот месяц исчерпан — следующая смена станет доступна с 1-го числа."
+)
+
+logger = logging.getLogger(__name__)
+
 
 class ProfileError(RuntimeError):
     """The account has no usable natal profile (or no account at all)."""
@@ -64,6 +77,10 @@ class ContactPermissionError(RuntimeError):
 
 class PremiumRequiredError(RuntimeError):
     """The feature is premium and the account has no premium access."""
+
+
+class ProfileChangeLimitError(RuntimeError):
+    """The monthly natal-profile change limit is exhausted."""
 
 
 class NatalRecord(Protocol):
@@ -162,13 +179,35 @@ async def save_owner_profile(
     birth: BirthData,
     *,
     time_unknown: bool = False,
-) -> None:
+    profile: UserProfile | None = None,
+) -> str:
     """Persist the owner's natal profile after a successful chart request.
 
-    Called by the bot once the pipeline has produced a chart, so the account
-    always carries the data the forecast tools need. The chart hash is the
-    same canonical identity ``charts_cache`` uses.
+    Returns ``"unchanged"`` when the stored data already matches (no write and
+    no spent change), ``"saved"`` otherwise. Pass the already loaded
+    ``profile`` to avoid an extra lookup. Raises ``ProfileChangeLimitError``
+    when the monthly change limit is exhausted.
     """
+    natal = natal_profile_from_birth(birth, time_unknown=time_unknown)
+    if profile is not None and natal_data_present(profile) and profile_matches(profile, natal):
+        return "unchanged"
+    is_initial = profile is None or not natal_data_present(profile)
+    limit = profile_change_limit()
+    saved = await store.save_user_natal_profile(
+        user_id,
+        natal,
+        count_change=not is_initial,
+        max_changes_per_month=None if is_initial or limit <= 0 else limit,
+    )
+    if not saved:
+        if is_initial:
+            raise RuntimeError("could not store the natal profile: the user does not exist")
+        raise ProfileChangeLimitError(PROFILE_CHANGE_LIMIT_MESSAGE.format(limit=limit))
+    return "saved"
+
+
+def natal_profile_from_birth(birth: BirthData, *, time_unknown: bool) -> NatalProfile:
+    """Build the stored profile payload of a birth input (canonical hash included)."""
     if birth.datetime_local:
         moment_local = datetime.fromisoformat(birth.datetime_local)
         birth_date = moment_local.date()
@@ -185,18 +224,100 @@ async def save_owner_profile(
         birth.house_system,
         birth.language,
     )
-    await store.save_user_natal_profile(
-        user_id,
-        NatalProfile(
-            birth_date=birth_date,
-            birth_time=local_time,
-            birth_time_unknown=bool(time_unknown),
-            birth_lat=birth.latitude,
-            birth_lon=birth.longitude,
-            birth_timezone=str(birth.timezone or "UTC"),
-            birth_city=birth.city,
-            birth_chart_hash=chart_hash,
-        ),
+    return NatalProfile(
+        birth_date=birth_date,
+        birth_time=local_time,
+        birth_time_unknown=bool(time_unknown),
+        birth_lat=birth.latitude,
+        birth_lon=birth.longitude,
+        birth_timezone=str(birth.timezone or "UTC"),
+        birth_city=birth.city,
+        birth_chart_hash=chart_hash,
+    )
+
+
+def profile_matches(record: NatalRecord, natal: NatalProfile) -> bool:
+    """True when the stored natal data already equals the proposed one."""
+    if record.birth_date != natal.birth_date:
+        return False
+    if record.birth_time != natal.birth_time:
+        return False
+    if bool(record.birth_time_unknown) != bool(natal.birth_time_unknown):
+        return False
+    if record.birth_lat is None or abs(float(record.birth_lat) - float(natal.birth_lat)) > 1e-6:
+        return False
+    if record.birth_lon is None or abs(float(record.birth_lon) - float(natal.birth_lon)) > 1e-6:
+        return False
+    if str(record.birth_timezone or "") != natal.birth_timezone:
+        return False
+    if (record.birth_city or None) != (natal.birth_city or None):
+        return False
+    return True
+
+
+def profile_change_limit() -> int:
+    """Monthly natal-profile change limit from the environment (default 3).
+
+    ``0`` or a negative value disables the limit; a non-integer value falls
+    back to the default so a typo in ``.env`` cannot lock users out.
+    """
+    raw = os.getenv(PROFILE_CHANGE_LIMIT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_PROFILE_CHANGE_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer; using %d",
+            PROFILE_CHANGE_LIMIT_ENV,
+            raw,
+            DEFAULT_PROFILE_CHANGE_LIMIT,
+        )
+        return DEFAULT_PROFILE_CHANGE_LIMIT
+    return value if value > 0 else 0
+
+
+def changes_used_this_month(profile: UserProfile) -> int:
+    """Natal-profile changes already spent in the current calendar month."""
+    period = profile.profile_changes_period
+    if period is None:
+        return 0
+    today = datetime.now(timezone.utc).date()
+    if (period.year, period.month) != (today.year, today.month):
+        return 0
+    return max(0, int(profile.profile_changes_count))
+
+
+def profile_changes_note(profile: UserProfile) -> str | None:
+    """One-line hint for the confirmation card; ``None`` when unlimited."""
+    limit = profile_change_limit()
+    if limit <= 0:
+        return None
+    used = changes_used_this_month(profile)
+    return f"🔄 Изменений данных рождения в этом месяце: {used} из {limit}"
+
+
+def ensure_profile_change_allowed(profile: UserProfile, natal: NatalProfile) -> None:
+    """Raise when the proposed profile exceeds the monthly change limit.
+
+    Called before the expensive calculation, so an exhausted limit fails fast.
+    An unchanged profile and the very first save never spend the allowance.
+    """
+    if not natal_data_present(profile) or profile_matches(profile, natal):
+        return
+    limit = profile_change_limit()
+    if limit <= 0:
+        return
+    if changes_used_this_month(profile) >= limit:
+        raise ProfileChangeLimitError(PROFILE_CHANGE_LIMIT_MESSAGE.format(limit=limit))
+
+
+def ensure_birth_change_allowed(
+    profile: UserProfile, birth: BirthData, *, time_unknown: bool
+) -> None:
+    """Convenience wrapper around ``ensure_profile_change_allowed``."""
+    ensure_profile_change_allowed(
+        profile, natal_profile_from_birth(birth, time_unknown=time_unknown)
     )
 
 

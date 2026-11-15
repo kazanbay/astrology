@@ -1,5 +1,7 @@
 """Tests for the onboarding texts and keyboards (no Telegram calls)."""
 
+from datetime import date, time
+
 from bot_ui import (
     ASK_DATE,
     ASK_NAME,
@@ -20,6 +22,8 @@ from bot_ui import (
     FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
+    PROFILE_CONFIRM_CALLBACK,
+    PROFILE_EDIT_CALLBACK,
     SKIP_NAME_CALLBACK,
     SYNASTRY_PREFIX,
     UNKNOWN_TIME_CALLBACK,
@@ -30,11 +34,13 @@ from bot_ui import (
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
+    format_stored_profile,
     main_menu,
+    profile_confirm_keyboard,
     skip_name_keyboard,
     unknown_time_keyboard,
 )
-from storage.store import ContactProfile
+from storage.store import ContactProfile, UserProfile
 
 
 def button_texts(markup):
@@ -67,6 +73,40 @@ def test_wizard_keyboards_expose_expected_callbacks():
     assert callback_data(skip_name_keyboard()) == [SKIP_NAME_CALLBACK]
     assert callback_data(unknown_time_keyboard()) == [UNKNOWN_TIME_CALLBACK]
     assert callback_data(confirm_keyboard()) == [CONFIRM_CALLBACK, EDIT_CALLBACK]
+
+
+def test_profile_confirm_keyboard_reuses_the_card_layout():
+    markup = profile_confirm_keyboard()
+
+    assert [button.text for row in markup.inline_keyboard for button in row] == [
+        "✅ Рассчитать",
+        "✏️ Изменить данные",
+    ]
+    assert callback_data(markup) == [PROFILE_CONFIRM_CALLBACK, PROFILE_EDIT_CALLBACK]
+
+
+def test_format_stored_profile_renders_saved_data_and_note():
+    profile = UserProfile(
+        user_id=1,
+        telegram_id=42,
+        display_name="Сергей",
+        birth_date=date(1985, 1, 29),
+        birth_time=time(2, 0),
+        birth_time_unknown=False,
+        birth_lat=56.14,
+        birth_lon=47.25,
+        birth_timezone="Europe/Moscow",
+        birth_city="Чебоксары, Россия",
+    )
+
+    text = format_stored_profile(profile, note="🔄 Изменений: 1 из 3")
+
+    assert text.startswith("Проверьте данные перед расчётом:")
+    assert "👤 Имя: Сергей" in text
+    assert "📅 Дата: 29.01.1985" in text
+    assert "🕐 Время: 02:00 (Europe/Moscow)" in text
+    assert "📍 Место: Чебоксары, Россия" in text
+    assert "Изменений: 1 из 3" in text
 
 
 def test_forecast_profile_keyboard_offers_self_and_contacts():

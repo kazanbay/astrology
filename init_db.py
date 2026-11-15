@@ -74,6 +74,11 @@ DDL_STATEMENTS: Sequence[str] = (
     )""",
     # Existing databases may predate the onboarding flow.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)",
+    # Profile change policy: the owner may change natal data a limited number
+    # of times per calendar month (PROFILE_CHANGES_PER_MONTH). The period is
+    # the first day of the month the counter belongs to (UTC).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_changes_count INT NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_changes_period DATE",
     # 2. Cache shared by every user with the same birth data (twins included).
     #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
     #    language, so one row holds both the ephemeris snapshot and the exact

@@ -116,7 +116,7 @@ def test_postgres_store_resolves_user_by_email():
 
 
 async def _profile_contacts_scenario() -> None:
-    from services.profiles import save_owner_profile
+    from services.profiles import ProfileChangeLimitError, save_owner_profile
     from storage.birth import BirthData
     from storage.store import ContactInput, NatalProfile
 
@@ -203,13 +203,84 @@ async def _profile_contacts_scenario() -> None:
         assert [item.name for item in remaining] == ["Пётр"]
         assert await store.get_contact(contact.contact_id, user_id=user_id) is None
 
-        # The save path of the service layer (bot flow) writes the same columns.
-        await save_owner_profile(store, user_id, birth, time_unknown=False)
+        # The save path of the service layer (bot flow) writes the same columns;
+        # identical data is reported as unchanged and spends no change.
+        profile_before = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert profile_before is not None
+        assert (
+            await save_owner_profile(
+                store, user_id, birth, time_unknown=False, profile=profile_before
+            )
+            == "saved"
+        )
         refreshed = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
         assert refreshed is not None
         assert refreshed.birth_time == time(12, 0)
         assert refreshed.birth_time_unknown is False
         assert len(refreshed.birth_chart_hash) == 64
+        assert refreshed.profile_changes_count == 1  # differs from the direct save above
+
+        assert (
+            await save_owner_profile(
+                store, user_id, birth, time_unknown=False, profile=refreshed
+            )
+            == "unchanged"
+        )
+        same = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert same is not None and same.profile_changes_count == 1
+
+        changed = BirthData(
+            dt_utc=datetime(1990, 8, 15, 9, 0, tzinfo=timezone.utc),
+            latitude=55.7558,
+            longitude=37.6173,
+            city="Москва, Россия",
+            timezone="Europe/Moscow",
+            datetime_local="1990-08-15T13:00:00",
+        )
+        assert (
+            await save_owner_profile(
+                store, user_id, changed, time_unknown=False, profile=same
+            )
+            == "saved"
+        )
+        second = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert second is not None and second.profile_changes_count == 2
+
+        # The SQL guard refuses changes beyond the monthly limit.
+        await store.pool.execute(
+            "UPDATE users SET profile_changes_count = 3, "
+            "profile_changes_period = date_trunc('month', now() AT TIME ZONE 'UTC')::date "
+            "WHERE user_id = $1",
+            user_id,
+        )
+        with pytest.raises(ProfileChangeLimitError):
+            await save_owner_profile(
+                store,
+                user_id,
+                birth,
+                time_unknown=False,
+                profile=await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID),
+            )
+        blocked = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert blocked is not None and blocked.profile_changes_count == 3
+
+        # A new month restarts the allowance.
+        await store.pool.execute(
+            "UPDATE users SET profile_changes_period = "
+            "(date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 month')::date "
+            "WHERE user_id = $1",
+            user_id,
+        )
+        reset_profile = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert reset_profile is not None
+        assert (
+            await save_owner_profile(
+                store, user_id, birth, time_unknown=False, profile=reset_profile
+            )
+            == "saved"
+        )
+        reset = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert reset is not None and reset.profile_changes_count == 1
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)

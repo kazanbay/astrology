@@ -119,7 +119,8 @@ UPDATE user_chart_requests
 SELECT_PROFILE_SQL = """
 SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_premium,
        birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
-       birth_timezone, birth_city, birth_chart_hash
+       birth_timezone, birth_city, birth_chart_hash,
+       profile_changes_count, profile_changes_period
   FROM users
  WHERE ($1::bigint IS NOT NULL AND telegram_id = $1::bigint)
     OR ($2::text IS NOT NULL AND email = $2::text)
@@ -127,12 +128,28 @@ SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_prem
  LIMIT 1
 """
 
-SAVE_NATAL_PROFILE_SQL = """
+#: First day of the current calendar month (UTC): a new month restarts the
+#: profile-change allowance.
+_PROFILE_MONTH_START_SQL = "date_trunc('month', now() AT TIME ZONE 'UTC')::date"
+
+SAVE_NATAL_PROFILE_SQL = f"""
 UPDATE users
    SET birth_date = $2, birth_time = $3, birth_time_unknown = $4,
        birth_lat = $5, birth_lon = $6, birth_timezone = $7,
-       birth_city = $8, birth_chart_hash = $9
+       birth_city = $8, birth_chart_hash = $9,
+       profile_changes_count = CASE
+           WHEN $10::boolean AND profile_changes_period = {_PROFILE_MONTH_START_SQL}
+               THEN profile_changes_count + 1
+           WHEN $10::boolean THEN 1
+           ELSE profile_changes_count END,
+       profile_changes_period = CASE
+           WHEN $10::boolean THEN {_PROFILE_MONTH_START_SQL}
+           ELSE profile_changes_period END
  WHERE user_id = $1
+   AND (NOT $10::boolean
+        OR $11::int IS NULL
+        OR profile_changes_period IS DISTINCT FROM {_PROFILE_MONTH_START_SQL}
+        OR profile_changes_count < $11::int)
 """
 
 SET_PREMIUM_SQL = "UPDATE users SET is_premium = $2 WHERE user_id = $1"
@@ -234,6 +251,10 @@ class UserProfile:
     birth_timezone: str | None = None
     birth_city: str | None = None
     birth_chart_hash: str | None = None
+    #: Natal-profile changes spent in ``profile_changes_period``.
+    profile_changes_count: int = 0
+    #: First day of the month the counter belongs to (UTC).
+    profile_changes_period: date | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready form for LangGraph tools and logs (dates as ISO strings)."""
@@ -247,6 +268,12 @@ class UserProfile:
             "birth_city": self.birth_city,
             "birth_timezone": self.birth_timezone,
             "birth_chart_hash": self.birth_chart_hash,
+            "profile_changes_count": self.profile_changes_count,
+            "profile_changes_period": (
+                self.profile_changes_period.isoformat()
+                if self.profile_changes_period is not None
+                else None
+            ),
         }
         for key in ("birth_date", "birth_time"):
             value = getattr(self, key)
@@ -345,7 +372,14 @@ class ChartStore(Protocol):
         self, *, telegram_id: int | str | None = None, email: str | None = None
     ) -> UserProfile | None: ...
 
-    async def save_user_natal_profile(self, user_id: int, profile: NatalProfile) -> bool: ...
+    async def save_user_natal_profile(
+        self,
+        user_id: int,
+        profile: NatalProfile,
+        *,
+        count_change: bool = False,
+        max_changes_per_month: int | None = None,
+    ) -> bool: ...
 
     async def set_user_premium(self, user_id: int, is_premium: bool) -> bool: ...
 
@@ -664,12 +698,30 @@ class PostgresChartStore:
             birth_timezone=row["birth_timezone"],
             birth_city=row["birth_city"],
             birth_chart_hash=row["birth_chart_hash"],
+            profile_changes_count=int(row["profile_changes_count"] or 0),
+            profile_changes_period=row["profile_changes_period"],
         )
 
-    async def save_user_natal_profile(self, user_id: int, profile: NatalProfile) -> bool:
-        """Write the owner's natal profile; ``False`` means the user does not exist."""
+    async def save_user_natal_profile(
+        self,
+        user_id: int,
+        profile: NatalProfile,
+        *,
+        count_change: bool = False,
+        max_changes_per_month: int | None = None,
+    ) -> bool:
+        """Write the owner's natal profile.
+
+        ``count_change`` marks the write as a real change: the monthly counter
+        is incremented, or reset when the stored period is a past month. With
+        ``max_changes_per_month`` the UPDATE is guarded by the limit, so a
+        concurrent double-tap cannot exceed it. ``False`` means the guard
+        rejected the write (limit reached) or the user does not exist.
+        """
         if len(profile.birth_chart_hash) != 64:
             raise ValueError("birth_chart_hash must be a 64-character SHA-256 hex string")
+        if max_changes_per_month is not None and max_changes_per_month < 1:
+            raise ValueError("max_changes_per_month must be positive when provided")
         status = await self.pool.execute(
             SAVE_NATAL_PROFILE_SQL,
             int(user_id),
@@ -681,6 +733,8 @@ class PostgresChartStore:
             profile.birth_timezone,
             profile.birth_city,
             profile.birth_chart_hash,
+            bool(count_change),
+            max_changes_per_month,
         )
         return status.endswith(" 1")
 
