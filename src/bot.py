@@ -252,18 +252,18 @@ def create_dispatcher(
 
     async def _pick_contacts(
         telegram_id: int, *, require_premium: bool
-    ) -> tuple[list[Any], str | None]:
-        """Load the user's contacts with the TZ permission rules applied."""
+    ) -> tuple[list[Any], str | None, bool]:
+        """Load contacts; the third value tells whether the premium gate blocked it."""
         if chart_pipeline is None:
-            return [], "Контакты недоступны: не настроено подключение к PostgreSQL."
+            return [], "Контакты недоступны: не настроено подключение к PostgreSQL.", False
         try:
             profile = await resolve_owner_profile(chart_pipeline.store, telegram_id=telegram_id)
         except ProfileError as exc:
-            return [], str(exc)
+            return [], str(exc), False
         if require_premium and not has_premium(profile, telegram_id):
-            return [], PREMIUM_REQUIRED_MESSAGE
+            return [], PREMIUM_REQUIRED_MESSAGE, True
         contacts = await chart_pipeline.store.list_contacts(profile.user_id)
-        return contacts, None
+        return contacts, None, False
 
     async def _report_is_cached(service: ChartReportService, chart_hash: str) -> bool:
         """True when the report for this chart is stored already (no LLM needed)."""
@@ -915,9 +915,13 @@ def create_dispatcher(
     @router.callback_query(F.data == FORECAST_CONTACTS_CALLBACK)
     async def forecast_contacts(callback: CallbackQuery) -> None:
         await callback.answer()
-        contacts, error_text = await _pick_contacts(callback.from_user.id, require_premium=True)
+        contacts, error_text, premium_denied = await _pick_contacts(
+            callback.from_user.id, require_premium=True
+        )
         if error_text:
-            await _show_inline(callback, error_text, None)
+            await _show_inline(
+                callback, error_text, premium_upsell_keyboard() if premium_denied else None
+            )
             return
         if not contacts:
             await _show_inline(
@@ -991,7 +995,7 @@ def create_dispatcher(
             await message.answer(str(exc))
             return
         except PremiumRequiredError as exc:
-            await message.answer(str(exc), reply_markup=main_menu())
+            await message.answer(str(exc), reply_markup=premium_upsell_keyboard())
             return
         except ContactPermissionError as exc:
             await message.answer(str(exc))
@@ -1043,9 +1047,14 @@ def create_dispatcher(
         if user is None:
             await message.answer("Не удалось определить пользователя Telegram.")
             return
-        contacts, error_text = await _pick_contacts(user.id, require_premium=True)
+        contacts, error_text, premium_denied = await _pick_contacts(
+            user.id, require_premium=True
+        )
         if error_text:
-            await message.answer(error_text, reply_markup=main_menu())
+            await message.answer(
+                error_text,
+                reply_markup=premium_upsell_keyboard() if premium_denied else main_menu(),
+            )
             return
         if not contacts:
             await message.answer(
@@ -1091,7 +1100,7 @@ def create_dispatcher(
             await callback.message.answer(str(exc))
             return
         except PremiumRequiredError as exc:
-            await callback.message.answer(str(exc), reply_markup=main_menu())
+            await callback.message.answer(str(exc), reply_markup=premium_upsell_keyboard())
             return
         except ContactPermissionError as exc:
             await callback.message.answer(str(exc))
@@ -1241,7 +1250,9 @@ def create_dispatcher(
         user = message.from_user
         if user is None:
             return
-        contacts, error_text = await _pick_contacts(user.id, require_premium=False)
+        contacts, error_text, _premium_denied = await _pick_contacts(
+            user.id, require_premium=False
+        )
         if error_text:
             await message.answer(error_text)
             return
@@ -1391,7 +1402,7 @@ def create_dispatcher(
             await message.answer(str(exc), reply_markup=main_menu())
             return
         if not has_premium(profile, user.id):
-            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=main_menu())
+            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=premium_upsell_keyboard())
             return
         await state.update_data(contact_owner_id=profile.user_id)
         if contact is not None:
@@ -1591,7 +1602,7 @@ def create_dispatcher(
             await message.answer(str(exc))
             return
         if not has_premium(profile, user.id):
-            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=main_menu())
+            await message.answer(PREMIUM_REQUIRED_MESSAGE, reply_markup=premium_upsell_keyboard())
             return
         try:
             parsed = parse_contact_command(command.args)
