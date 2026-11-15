@@ -146,6 +146,28 @@ def test_invalid_service_settings_are_rejected():
         ChartReportService(FakeStore(), prompt_version=" ")
 
 
+class FailingStore(FakeStore):
+    """Cache writes fail: the report must still reach the user."""
+
+    async def save_generation(self, record):
+        raise RuntimeError("value too long for type character varying(32)")
+
+    async def attach_generation(self, request_id, generation_id):
+        raise RuntimeError("database is unavailable")
+
+
+def test_persistence_failure_does_not_lose_the_report():
+    store = FailingStore()
+    service = ChartReportService(
+        store, synthesizer=FakeSynthesizer(), model_name="model-a", temperature=0.7
+    )
+
+    report = asyncio.run(service.get_or_generate(chart_result()))
+
+    assert report.text == "Готовый разбор"
+    assert report.cache_hit is False
+
+
 def test_temperature_is_normalized_for_the_cache_key():
     store = FakeStore()
     service = ChartReportService(store, synthesizer=FakeSynthesizer(), temperature=0.7000001)

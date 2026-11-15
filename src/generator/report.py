@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -39,6 +40,8 @@ from .synthesizer import (
 )
 
 GENERATION_ID_LENGTH = 64
+
+logger = logging.getLogger(__name__)
 
 #: ``(chart, chunks, model_name, temperature) -> report text``
 Synthesizer = Callable[[dict[str, Any], list[dict[str, Any]], str, float], Awaitable[str]]
@@ -151,18 +154,26 @@ class ChartReportService:
                 self.model_name,
                 self.temperature,
             )
-            await self.store.save_generation(
-                GenerationRecord(
-                    generation_id=generation_id,
-                    chart_hash=result.chart_hash,
-                    prompt_version=self.prompt_version,
-                    model_name=self.model_name,
-                    temperature=self.temperature,
-                    generated_text=text,
+            # The generated text is the expensive part: a cache write failure
+            # must not hide it from the user, so persistence is best-effort.
+            try:
+                await self.store.save_generation(
+                    GenerationRecord(
+                        generation_id=generation_id,
+                        chart_hash=result.chart_hash,
+                        prompt_version=self.prompt_version,
+                        model_name=self.model_name,
+                        temperature=self.temperature,
+                        generated_text=text,
+                    )
                 )
-            )
+            except Exception:
+                logger.exception("could not cache the generated report")
 
-        await self.store.attach_generation(result.request_id, generation_id)
+        try:
+            await self.store.attach_generation(result.request_id, generation_id)
+        except Exception:
+            logger.exception("could not link the report to the request")
         return ChartReport(
             generation_id=generation_id,
             text=text,
