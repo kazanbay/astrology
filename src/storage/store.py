@@ -282,6 +282,34 @@ RETURNING contact_id, user_id, name, relation, birth_date, birth_time, birth_tim
 
 DELETE_CONTACT_SQL = "DELETE FROM user_contacts WHERE contact_id = $1 AND user_id = $2"
 
+INSERT_FEEDBACK_SQL = """
+INSERT INTO feedback (user_id, username, message)
+VALUES ($1, $2, $3)
+RETURNING id, user_id, username, message, status, admin_chat_id, admin_message_id, created_at
+"""
+
+ATTACH_FEEDBACK_MESSAGE_SQL = """
+UPDATE feedback SET admin_chat_id = $2, admin_message_id = $3 WHERE id = $1
+"""
+
+SELECT_FEEDBACK_BY_ADMIN_MESSAGE_SQL = """
+SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, created_at
+  FROM feedback
+ WHERE admin_chat_id = $1 AND admin_message_id = $2
+ ORDER BY id DESC
+ LIMIT 1
+"""
+
+SELECT_OPEN_FEEDBACK_BY_USER_SQL = """
+SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, created_at
+  FROM feedback
+ WHERE user_id = $1 AND status = 'new'
+ ORDER BY id DESC
+ LIMIT 1
+"""
+
+MARK_FEEDBACK_ANSWERED_SQL = "UPDATE feedback SET status = 'answered' WHERE id = $1"
+
 UPDATE_CONTACT_SQL = """
 UPDATE user_contacts
    SET name = $3, relation = $4, birth_date = $5, birth_time = $6,
@@ -356,6 +384,34 @@ class ForecastReportRecord:
     temperature: float
     generated_text: str
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class FeedbackTicket:
+    """One ``feedback`` row: a user report and its delivery state."""
+
+    id: int
+    user_id: int
+    username: str | None
+    message: str
+    status: str
+    admin_chat_id: int | None = None
+    admin_message_id: int | None = None
+    created_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form for logs and admin views (no message body needed)."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "username": self.username,
+            "status": self.status,
+            "admin_chat_id": self.admin_chat_id,
+            "admin_message_id": self.admin_message_id,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at is not None else None
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -605,6 +661,22 @@ class ChartStore(Protocol):
 
     async def delete_contact(self, contact_id: int, user_id: int) -> bool: ...
 
+    async def add_feedback(
+        self, user_id: int, username: str | None, message: str
+    ) -> FeedbackTicket: ...
+
+    async def attach_feedback_message(
+        self, feedback_id: int, admin_chat_id: int, admin_message_id: int
+    ) -> None: ...
+
+    async def find_feedback_by_admin_message(
+        self, admin_chat_id: int, admin_message_id: int
+    ) -> FeedbackTicket | None: ...
+
+    async def find_open_feedback(self, user_id: int) -> FeedbackTicket | None: ...
+
+    async def mark_feedback_answered(self, feedback_id: int) -> bool: ...
+
     async def update_contact(
         self, contact_id: int, user_id: int, contact: ContactInput
     ) -> bool: ...
@@ -764,6 +836,19 @@ def _contact_from_row(row: asyncpg.Record) -> ContactProfile:
         birth_lon=row["birth_lon"],
         birth_timezone=row["birth_timezone"],
         birth_city=row["birth_city"],
+        created_at=row["created_at"],
+    )
+
+
+def _feedback_from_row(row: asyncpg.Record) -> FeedbackTicket:
+    return FeedbackTicket(
+        id=int(row["id"]),
+        user_id=int(row["user_id"]),
+        username=row["username"],
+        message=str(row["message"]),
+        status=str(row["status"]),
+        admin_chat_id=row["admin_chat_id"],
+        admin_message_id=row["admin_message_id"],
         created_at=row["created_at"],
     )
 
@@ -1103,6 +1188,46 @@ class PostgresChartStore:
     async def delete_contact(self, contact_id: int, user_id: int) -> bool:
         """Delete a contact of this user; ``False`` when there was nothing to delete."""
         status = await self.pool.execute(DELETE_CONTACT_SQL, int(contact_id), int(user_id))
+        return status.endswith(" 1")
+
+    async def add_feedback(
+        self, user_id: int, username: str | None, message: str
+    ) -> FeedbackTicket:
+        """Store one user report and return the created ticket."""
+        text = str(message or "").strip()
+        if not text:
+            raise ValueError("feedback message must be a non-empty string")
+        name = (str(username).strip().lstrip("@")[:255] if username else None) or None
+        row = await self.pool.fetchrow(INSERT_FEEDBACK_SQL, int(user_id), name, text)
+        if row is None:  # pragma: no cover - would mean a lost row
+            raise RuntimeError("could not store the feedback ticket")
+        return _feedback_from_row(row)
+
+    async def attach_feedback_message(
+        self, feedback_id: int, admin_chat_id: int, admin_message_id: int
+    ) -> None:
+        """Remember the admin-group message that carries this ticket."""
+        await self.pool.execute(
+            ATTACH_FEEDBACK_MESSAGE_SQL, int(feedback_id), int(admin_chat_id), int(admin_message_id)
+        )
+
+    async def find_feedback_by_admin_message(
+        self, admin_chat_id: int, admin_message_id: int
+    ) -> FeedbackTicket | None:
+        """Resolve the ticket behind a forwarded message in the admin group."""
+        row = await self.pool.fetchrow(
+            SELECT_FEEDBACK_BY_ADMIN_MESSAGE_SQL, int(admin_chat_id), int(admin_message_id)
+        )
+        return _feedback_from_row(row) if row is not None else None
+
+    async def find_open_feedback(self, user_id: int) -> FeedbackTicket | None:
+        """Latest unanswered ticket of one user (regex fallback)."""
+        row = await self.pool.fetchrow(SELECT_OPEN_FEEDBACK_BY_USER_SQL, int(user_id))
+        return _feedback_from_row(row) if row is not None else None
+
+    async def mark_feedback_answered(self, feedback_id: int) -> bool:
+        """Mark a ticket answered; ``False`` when it does not exist."""
+        status = await self.pool.execute(MARK_FEEDBACK_ANSWERED_SQL, int(feedback_id))
         return status.endswith(" 1")
 
     async def update_contact(

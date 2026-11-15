@@ -172,6 +172,9 @@ async def _profile_contacts_scenario() -> None:
     try:
         for stale_id in (TEST_TELEGRAM_ID, TEST_TELEGRAM_ID + 1, TEST_TELEGRAM_ID + 2):
             await store.pool.execute("DELETE FROM users WHERE telegram_id = $1", stale_id)
+        await store.pool.execute(
+            "DELETE FROM feedback WHERE user_id = $1", TEST_TELEGRAM_ID
+        )
         user_id = await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, first_name="Тест")
         birth = BirthData(
             dt_utc=datetime(1990, 8, 15, 8, 0, tzinfo=timezone.utc),
@@ -437,6 +440,17 @@ async def _profile_contacts_scenario() -> None:
         assert events[0].premium_until_before is not None
         assert events[1].actor_user_id == other_id
         assert events[1].reference == "testcode1"
+
+        # Feedback tickets: stored, forwarded and answered from the admin chat.
+        ticket = await store.add_feedback(user_id, "tester", "Не приходит прогноз")
+        assert ticket.status == "new"
+        assert ticket.username == "tester"
+        await store.attach_feedback_message(ticket.id, -1001234567890, 555)
+        found = await store.find_feedback_by_admin_message(-1001234567890, 555)
+        assert found is not None and found.id == ticket.id
+        assert await store.mark_feedback_answered(ticket.id) is True
+        assert await store.find_open_feedback(user_id) is None
+        assert await store.mark_feedback_answered(999999999) is False
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
@@ -444,6 +458,9 @@ async def _profile_contacts_scenario() -> None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", other_id)
         if invited_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", invited_id)
+        await store.pool.execute(
+            "DELETE FROM feedback WHERE user_id = $1", TEST_TELEGRAM_ID
+        )
         await store.close()
 
 

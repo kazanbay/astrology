@@ -15,7 +15,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery, User
+from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery, ReactionTypeEmoji, User
 from dotenv import load_dotenv
 
 from astronomy.calculator import AstronomyError
@@ -26,6 +26,7 @@ from bot_ui import (
     ASK_TIME,
     BUTTON_CHART,
     BUTTON_CONTACTS,
+    BUTTON_FEEDBACK,
     BUTTON_FORECAST,
     BUTTON_HELP,
     BUTTON_HISTORY,
@@ -55,6 +56,10 @@ from bot_ui import (
     FORECAST_SELF_CALLBACK,
     GREETING,
     HELP,
+    FEEDBACK_EMPTY,
+    FEEDBACK_PROMPT,
+    FEEDBACK_SENT,
+    FEEDBACK_UNAVAILABLE,
     INVITE_CALLBACK,
     PREMIUM_BUY_PREFIX,
     PREMIUM_HISTORY_CALLBACK,
@@ -89,6 +94,11 @@ from bot_ui import (
 from generator.report import ChartReportService
 from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
+from services.feedback import (
+    format_admin_reply,
+    format_ticket_notice,
+    parse_user_id,
+)
 from services.forecast import ForecastService
 from services.forecast_report import ForecastReportService
 from services.premium import (
@@ -182,6 +192,12 @@ class ContactForm(StatesGroup):
     birth_place = State()
 
 
+class FeedbackForm(StatesGroup):
+    """Waiting for the user's feedback text."""
+
+    message = State()
+
+
 async def _send_previews(message: Message, chunks: list[dict[str, Any]]) -> None:
     """Send the best sections as short follow-up messages."""
     for preview in format_section_previews(chunks):
@@ -209,6 +225,7 @@ def create_dispatcher(
     synastry_report_service: SynastryReportService | None = None,
     premium_catalog: PremiumCatalog | None = None,
     bot_username: str | None = None,
+    admin_chat_id: int | None = None,
 ) -> Dispatcher:
     """Create handlers bound to the single startup instances of the services."""
     dispatcher = Dispatcher()
@@ -1504,6 +1521,128 @@ def create_dispatcher(
             reply_markup=main_menu(),
         )
 
+    async def _react(bot: Bot, chat_id: int, message_id: int, emoji: str) -> None:
+        """React to an admin message; a missing reaction right is not fatal."""
+        try:
+            await bot.set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+        except Exception:
+            logger.warning("could not set a reaction on the admin message", exc_info=True)
+
+    @router.message(Command("id"))
+    async def id_handler(message: Message) -> None:
+        """Show chat and user ids; used to fill ADMIN_CHAT_ID in .env."""
+        chat = message.chat
+        user = message.from_user
+        lines = [
+            "🆔 Информация о чате:",
+            f"Тип чата: {chat.type}",
+            f"ID этого чата: {chat.id}",
+        ]
+        if user is not None:
+            lines.append(f"Ваш личный ID: {user.id}")
+        await message.answer("\n".join(lines))
+
+    @router.message(Command("feedback"))
+    @router.message(F.text == BUTTON_FEEDBACK)
+    async def feedback_entry(message: Message, state: FSMContext) -> None:
+        await state.set_state(FeedbackForm.message)
+        await message.answer(FEEDBACK_PROMPT)
+
+    @router.message(Command("cancel"))
+    async def cancel_feedback(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=main_menu())
+
+    @router.message(FeedbackForm.message)
+    async def feedback_message(message: Message, state: FSMContext, bot: Bot) -> None:
+        user = message.from_user
+        text = (message.text or "").strip()
+        if user is None:
+            return
+        if text.startswith("/"):
+            await message.answer(FEEDBACK_EMPTY)
+            return
+        if not text:
+            await message.answer(FEEDBACK_EMPTY)
+            return
+        if chart_pipeline is None:
+            await state.clear()
+            await message.answer(FEEDBACK_UNAVAILABLE, reply_markup=main_menu())
+            return
+        try:
+            ticket = await chart_pipeline.store.add_feedback(user.id, user.username, text)
+        except Exception:
+            logger.exception("feedback storage failed")
+            await message.answer(FEEDBACK_UNAVAILABLE, reply_markup=main_menu())
+            return
+        await state.clear()
+        if admin_chat_id:
+            try:
+                created = (
+                    ticket.created_at.strftime("%d.%m.%Y %H:%M UTC")
+                    if ticket.created_at is not None
+                    else "—"
+                )
+                sent = await bot.send_message(
+                    admin_chat_id,
+                    format_ticket_notice(
+                        ticket_id=ticket.id,
+                        username=ticket.username,
+                        user_id=ticket.user_id,
+                        message=ticket.message,
+                        created_at=created,
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                await chart_pipeline.store.attach_feedback_message(
+                    ticket.id, admin_chat_id, sent.message_id
+                )
+            except Exception:
+                logger.exception("feedback delivery to the admin chat failed")
+        else:
+            logger.warning(
+                "ADMIN_CHAT_ID is not configured; feedback #%s is stored without forwarding",
+                ticket.id,
+            )
+        await message.answer(FEEDBACK_SENT, reply_markup=main_menu())
+
+    @router.message(F.chat.id == admin_chat_id, F.reply_to_message)
+    async def admin_feedback_reply(message: Message, bot: Bot) -> None:
+        """Deliver an admin reply from the group to the user in private."""
+        if chart_pipeline is None or admin_chat_id is None:
+            return
+        sender = message.from_user
+        if sender is None or sender.is_bot:
+            return
+        reply = message.reply_to_message
+        if reply is None:
+            return
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return
+        ticket = await chart_pipeline.store.find_feedback_by_admin_message(
+            admin_chat_id, reply.message_id
+        )
+        if ticket is None:
+            user_id = parse_user_id(reply.text or reply.caption)
+            if user_id is not None:
+                ticket = await chart_pipeline.store.find_open_feedback(user_id)
+        if ticket is None:
+            return
+        try:
+            await bot.send_message(ticket.user_id, format_admin_reply(text))
+        except Exception:
+            logger.exception("feedback reply delivery failed")
+            await _react(bot, admin_chat_id, message.message_id, "👎")
+            return
+        await chart_pipeline.store.mark_feedback_answered(ticket.id)
+        await _react(bot, admin_chat_id, message.message_id, "👍")
+
     @router.message()
     async def text_handler(message: Message, bot: Bot) -> None:
         user_query = message.text
@@ -1560,6 +1699,16 @@ async def main() -> None:
         premium_catalog = load_catalog()
     except PremiumConfigError:
         logger.exception("premium plans are unavailable; the shop is disabled")
+    admin_chat_id: int | None = None
+    raw_admin_chat = os.getenv("ADMIN_CHAT_ID", "").strip()
+    if raw_admin_chat:
+        try:
+            admin_chat_id = int(raw_admin_chat)
+        except ValueError:
+            logger.error(
+                "ADMIN_CHAT_ID must be an integer, got %r; feedback forwarding is disabled",
+                raw_admin_chat,
+            )
     bot_username = None
     try:
         bot_username = (await bot.get_me()).username
@@ -1603,6 +1752,7 @@ async def main() -> None:
         synastry_report_service,
         premium_catalog,
         bot_username,
+        admin_chat_id,
     )
     try:
         await dispatcher.start_polling(bot)

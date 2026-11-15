@@ -127,6 +127,21 @@ DDL_STATEMENTS: Sequence[str] = (
     )""",
     "CREATE INDEX IF NOT EXISTS idx_premium_events_user "
     "ON premium_events (user_id, created_at DESC)",
+    # User feedback: stored locally, forwarded to the admin group; the reply in
+    # the group is resolved through (admin_chat_id, admin_message_id).
+    """CREATE TABLE IF NOT EXISTS feedback (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        username VARCHAR(255),
+        message TEXT NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'new',
+        admin_chat_id BIGINT,
+        admin_message_id BIGINT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback (status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_admin_message "
+    "ON feedback (admin_chat_id, admin_message_id)",
     # 2. Cache shared by every user with the same birth data (twins included).
     #    chart_hash is SHA-256 over the canonical birth inputs and the RAG
     #    language, so one row holds both the ephemeris snapshot and the exact

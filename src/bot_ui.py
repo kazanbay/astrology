@@ -23,6 +23,7 @@ BUTTON_CHART = "🔮 Рассчитать карту"
 BUTTON_FORECAST = "📅 Прогноз"
 BUTTON_SYNASTRY = "💞 Совместимость"
 BUTTON_CONTACTS = "👥 Мои контакты"
+BUTTON_FEEDBACK = "💬 Обратная связь"
 BUTTON_PREMIUM = "👑 Премиум"
 BUTTON_HISTORY = "🕘 История"
 BUTTON_HELP = "❓ Помощь"
@@ -81,6 +82,7 @@ HELP = (
     "📅 «Прогноз» — транзиты на день, неделю, месяц или год по вашему профилю.\n"
     "💞 «Совместимость» — синастрия с человеком из вашего списка (премиум).\n"
     "👥 «Мои контакты» — карточки людей: редактирование и удаление.\n"
+    "💬 «Обратная связь» — написать разработчику; ответ придёт сюда же.\n"
     "👑 «Премиум» — подписка за звёзды Telegram: 1, 3, 6, 12 или 24 месяца.\n"
     "🕘 «История» — ваши прошлые запросы.\n"
     "💬 Любой вопрос текстом — поиск ответа по книгам.\n\n"
@@ -133,6 +135,18 @@ CONTACT_WIZARD_ASK_TIME = (
 
 CONTACT_WIZARD_ASK_PLACE = "Шаг 5 из 5. Город рождения?\n\nНапример: Тула"
 
+FEEDBACK_PROMPT = (
+    "💬 Напишите сообщение для разработчика.\n\n"
+    "Оно уйдёт в поддержку вместе с вашим @username, чтобы мы могли ответить вам здесь же.\n"
+    "Отмена — /cancel."
+)
+
+FEEDBACK_SENT = "Спасибо! Ваше сообщение отправлено разработчику. Ожидайте ответа."
+
+FEEDBACK_EMPTY = "Пока нечего отправлять: напишите текст сообщения. Отмена — /cancel."
+
+FEEDBACK_UNAVAILABLE = "Обратная связь временно недоступна. Попробуйте позже."
+
 
 def main_menu() -> ReplyKeyboardMarkup:
     """Persistent bottom menu shown after /start."""
@@ -141,7 +155,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BUTTON_CHART), KeyboardButton(text=BUTTON_FORECAST)],
             [KeyboardButton(text=BUTTON_CONTACTS), KeyboardButton(text=BUTTON_SYNASTRY)],
             [KeyboardButton(text=BUTTON_HISTORY), KeyboardButton(text=BUTTON_PREMIUM)],
-            [KeyboardButton(text=BUTTON_HELP)],
+            [KeyboardButton(text=BUTTON_FEEDBACK), KeyboardButton(text=BUTTON_HELP)],
         ],
         resize_keyboard=True,
         is_persistent=True,
