@@ -18,6 +18,8 @@ jobs:
             set -e
             cd /opt/astrology
             git pull origin main
-            docker compose up -d --build --remove-orphans
+            docker compose build
+            docker compose run --rm --no-deps bot python init_db.py
+            docker compose up -d --remove-orphans
             docker system prune -f
             

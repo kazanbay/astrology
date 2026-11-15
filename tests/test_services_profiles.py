@@ -315,7 +315,9 @@ def test_profile_change_limit_env_parsing(monkeypatch):
 def test_ensure_change_allowed_skips_unchanged_and_initial(monkeypatch):
     monkeypatch.setenv("PROFILE_CHANGES_PER_MONTH", "3")
     crowded = owner_profile(
-        profile_changes_count=3, profile_changes_period=money_month_start()
+        profile_changes_count=3,
+        profile_changes_period=money_month_start(),
+        birth_city="Москва, Россия",
     )
 
     # The stored data already matches: nothing to spend, nothing to raise.
