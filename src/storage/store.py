@@ -141,7 +141,8 @@ SELECT_PROFILE_SQL = """
 SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_premium,
        birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
        birth_timezone, birth_city, birth_chart_hash,
-       profile_changes_count, profile_changes_period, premium_until, referral_code
+       profile_changes_count, profile_changes_period, premium_until, referral_code,
+       username, is_blocked
   FROM users
  WHERE ($1::bigint IS NOT NULL AND telegram_id = $1::bigint)
     OR ($2::text IS NOT NULL AND email = $2::text)
@@ -311,9 +312,77 @@ SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, 
  LIMIT 1
 """
 
+SELECT_FEEDBACK_LIST_SQL = """
+SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, created_at
+  FROM feedback
+ WHERE ($1::text IS NULL OR status = $1)
+ ORDER BY created_at DESC, id DESC
+ LIMIT $2
+"""
+
+SELECT_FEEDBACK_BY_ID_SQL = """
+SELECT id, user_id, username, message, status, admin_chat_id, admin_message_id, created_at
+  FROM feedback
+ WHERE id = $1
+"""
+
 MARK_FEEDBACK_ANSWERED_SQL = "UPDATE feedback SET status = 'answered' WHERE id = $1"
 
-TOUCH_USER_SQL = "UPDATE users SET last_active_at = NOW() WHERE telegram_id = $1"
+TOUCH_USER_SQL = """
+UPDATE users
+   SET last_active_at = NOW(), username = COALESCE($2, username)
+ WHERE telegram_id = $1
+"""
+
+SET_USERNAME_SQL = "UPDATE users SET username = COALESCE($2, username) WHERE user_id = $1"
+
+SET_USER_BLOCKED_SQL = "UPDATE users SET is_blocked = $2 WHERE user_id = $1"
+
+SELECT_USER_BLOCKED_SQL = "SELECT is_blocked FROM users WHERE telegram_id = $1"
+
+SELECT_ADMIN_USERS_SQL = """
+SELECT user_id, telegram_id, username, first_name, last_name, display_name, is_premium,
+       is_blocked, premium_until, created_at, last_active_at
+  FROM users
+ WHERE ($1::text IS NULL
+        OR ($1 ~ '^[0-9]+$' AND (telegram_id::text = $1 OR user_id::text = $1))
+        OR lower(coalesce(username, '')) LIKE '%' || lower($1) || '%'
+        OR lower(coalesce(first_name, '')) LIKE '%' || lower($1) || '%'
+        OR lower(coalesce(last_name, '')) LIKE '%' || lower($1) || '%'
+        OR lower(coalesce(display_name, '')) LIKE '%' || lower($1) || '%')
+ ORDER BY created_at DESC NULLS LAST, user_id DESC
+ LIMIT $2
+"""
+
+ADMIN_USER_STATS_SQL = """
+SELECT
+  (SELECT count(*) FROM user_chart_requests WHERE user_id = $1) AS requests,
+  (SELECT count(*) FROM user_contacts WHERE user_id = $1) AS contacts,
+  (SELECT count(*) FROM feedback
+    WHERE user_id = (SELECT telegram_id FROM users WHERE user_id = $1)) AS feedback,
+  (SELECT count(*) FROM payments WHERE user_id = $1) AS payments,
+  (SELECT COALESCE(sum(stars), 0) FROM payments WHERE user_id = $1) AS stars,
+  (SELECT count(*) FROM premium_events WHERE user_id = $1) AS grants,
+  (SELECT count(*) FROM analytics_events
+    WHERE user_id = (SELECT telegram_id FROM users WHERE user_id = $1)
+      AND event_type = 'chart') AS charts,
+  (SELECT count(*) FROM analytics_events
+    WHERE user_id = (SELECT telegram_id FROM users WHERE user_id = $1)
+      AND event_type = 'forecast') AS forecasts,
+  (SELECT count(*) FROM analytics_events
+    WHERE user_id = (SELECT telegram_id FROM users WHERE user_id = $1)
+      AND event_type = 'synastry') AS synastry,
+  (SELECT max(created_at) FROM analytics_events
+    WHERE user_id = (SELECT telegram_id FROM users WHERE user_id = $1)) AS last_event_at
+"""
+
+SELECT_USER_EVENTS_SQL = """
+SELECT event_type, created_at
+  FROM analytics_events
+ WHERE user_id = $1
+ ORDER BY created_at DESC, event_id DESC
+ LIMIT $2
+"""
 
 INSERT_EVENT_SQL = "INSERT INTO analytics_events (user_id, event_type) VALUES ($1, $2)"
 
@@ -537,6 +606,10 @@ class UserProfile:
     birth_timezone: str | None = None
     birth_city: str | None = None
     birth_chart_hash: str | None = None
+    #: Telegram @username, refreshed on every interaction.
+    username: str | None = None
+    #: Administrative block: the access middleware drops such accounts.
+    is_blocked: bool = False
     #: Natal-profile changes spent in ``profile_changes_period``.
     profile_changes_count: int = 0
     #: First day of the month the counter belongs to (UTC).
@@ -558,6 +631,8 @@ class UserProfile:
             "birth_city": self.birth_city,
             "birth_timezone": self.birth_timezone,
             "birth_chart_hash": self.birth_chart_hash,
+            "username": self.username,
+            "is_blocked": self.is_blocked,
             "profile_changes_count": self.profile_changes_count,
             "profile_changes_period": (
                 self.profile_changes_period.isoformat()
@@ -640,6 +715,7 @@ class ChartStore(Protocol):
         first_name: str | None = None,
         last_name: str | None = None,
         display_name: str | None = None,
+        username: str | None = None,
     ) -> int: ...
 
     async def find_user(
@@ -709,7 +785,27 @@ class ChartStore(Protocol):
 
     async def mark_feedback_answered(self, feedback_id: int) -> bool: ...
 
+    async def list_feedback(
+        self, *, status: str | None = "new", limit: int = 20
+    ) -> list[FeedbackTicket]: ...
+
+    async def get_feedback(self, feedback_id: int) -> FeedbackTicket | None: ...
+
     async def touch_user(self, telegram_id: int) -> None: ...
+
+    async def set_user_blocked(self, user_id: int, blocked: bool) -> bool: ...
+
+    async def is_user_blocked(self, telegram_id: int) -> bool | None: ...
+
+    async def list_users(
+        self, *, query: str | None = None, limit: int = 10
+    ) -> list[UserProfile]: ...
+
+    async def admin_user_stats(self, user_id: int) -> dict[str, int]: ...
+
+    async def list_user_events(
+        self, telegram_id: int, *, limit: int = 8
+    ) -> list[dict[str, object]]: ...
 
     async def record_event(self, user_id: int, event_type: str) -> None: ...
 
@@ -929,6 +1025,7 @@ class PostgresChartStore:
         first_name: str | None = None,
         last_name: str | None = None,
         display_name: str | None = None,
+        username: str | None = None,
     ) -> int:
         """Return the internal ``user_id``, creating the account on first contact."""
         telegram = _telegram_id(telegram_id)
@@ -948,6 +1045,9 @@ class PostgresChartStore:
             raise RuntimeError("could not resolve user_id after upsert")
         if display:
             await self.pool.execute(SET_DISPLAY_NAME_SQL, int(user_id), display)
+        name = str(username).strip().lstrip("@")[:64] if username else None
+        if name:
+            await self.pool.execute(SET_USERNAME_SQL, int(user_id), name)
         return int(user_id)
 
     async def find_user(
@@ -1143,6 +1243,8 @@ class PostgresChartStore:
             profile_changes_period=row["profile_changes_period"],
             premium_until=row["premium_until"],
             referral_code=row["referral_code"],
+            username=row["username"],
+            is_blocked=bool(row["is_blocked"]),
         )
 
     async def save_user_natal_profile(
@@ -1268,9 +1370,93 @@ class PostgresChartStore:
         status = await self.pool.execute(MARK_FEEDBACK_ANSWERED_SQL, int(feedback_id))
         return status.endswith(" 1")
 
-    async def touch_user(self, telegram_id: int) -> None:
-        """Refresh last_active_at for an existing account; unknown ids are ignored."""
-        await self.pool.execute(TOUCH_USER_SQL, int(telegram_id))
+    async def list_feedback(
+        self, *, status: str | None = "new", limit: int = 20
+    ) -> list[FeedbackTicket]:
+        """Admin ticket list, newest first; ``status=None`` returns everything."""
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        rows = await self.pool.fetch(SELECT_FEEDBACK_LIST_SQL, status, int(limit))
+        return [_feedback_from_row(row) for row in rows]
+
+    async def get_feedback(self, feedback_id: int) -> FeedbackTicket | None:
+        """One ticket by id."""
+        row = await self.pool.fetchrow(SELECT_FEEDBACK_BY_ID_SQL, int(feedback_id))
+        return _feedback_from_row(row) if row is not None else None
+
+    async def touch_user(self, telegram_id: int, username: str | None = None) -> None:
+        """Refresh last_active_at and the @username; unknown ids are ignored."""
+        name = str(username).strip().lstrip("@")[:64] if username else None
+        await self.pool.execute(TOUCH_USER_SQL, int(telegram_id), name or None)
+
+    async def set_user_blocked(self, user_id: int, blocked: bool) -> bool:
+        """Block or unblock one account; ``False`` when it does not exist."""
+        status = await self.pool.execute(SET_USER_BLOCKED_SQL, int(user_id), bool(blocked))
+        return status.endswith(" 1")
+
+    async def is_user_blocked(self, telegram_id: int) -> bool | None:
+        """``True``/``False`` for a known account, ``None`` when there is no row."""
+        value = await self.pool.fetchval(SELECT_USER_BLOCKED_SQL, int(telegram_id))
+        return None if value is None else bool(value)
+
+    async def list_users(
+        self, *, query: str | None = None, limit: int = 10
+    ) -> list[UserProfile]:
+        """Admin search: Telegram id / internal id / @username / name substring."""
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        text = str(query).strip() if query else None
+        rows = await self.pool.fetch(SELECT_ADMIN_USERS_SQL, text or None, int(limit))
+        return [
+            UserProfile(
+                user_id=int(row["user_id"]),
+                telegram_id=row["telegram_id"],
+                username=row["username"],
+                first_name=row["first_name"],
+                last_name=row["last_name"],
+                display_name=row["display_name"],
+                is_premium=bool(row["is_premium"]),
+                is_blocked=bool(row["is_blocked"]),
+                premium_until=row["premium_until"],
+            )
+            for row in rows
+        ]
+
+    async def admin_user_stats(self, user_id: int) -> dict[str, int]:
+        """Counters shown on the admin user card."""
+        row = await self.pool.fetchrow(ADMIN_USER_STATS_SQL, int(user_id))
+        if row is None:  # pragma: no cover - scalar subqueries always return a row
+            return {
+                "requests": 0,
+                "contacts": 0,
+                "feedback": 0,
+                "payments": 0,
+                "stars": 0,
+                "grants": 0,
+                "charts": 0,
+                "forecasts": 0,
+                "synastry": 0,
+                "last_event_at": 0,
+            }
+        stats: dict[str, int] = {}
+        for key in row.keys():
+            value = row[key]
+            if key == "last_event_at":
+                continue
+            stats[key] = int(value or 0)
+        return stats
+
+    async def list_user_events(
+        self, telegram_id: int, *, limit: int = 8
+    ) -> list[dict[str, object]]:
+        """Recent feature-usage events of one account (newest first)."""
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        rows = await self.pool.fetch(SELECT_USER_EVENTS_SQL, int(telegram_id), int(limit))
+        return [
+            {"event_type": str(row["event_type"]), "created_at": row["created_at"]}
+            for row in rows
+        ]
 
     async def record_event(self, user_id: int, event_type: str) -> None:
         """Append one feature-usage event (chart / forecast / synastry / other)."""

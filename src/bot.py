@@ -21,6 +21,16 @@ from dotenv import load_dotenv
 
 from astronomy.calculator import AstronomyError
 from bot_ui import (
+    ADMIN_BLOCK_PREFIX,
+    ADMIN_CLOSE_PREFIX,
+    ADMIN_GRANT_PREFIX,
+    ADMIN_HISTORY_PREFIX,
+    ADMIN_PREMIUM_PREFIX,
+    ADMIN_RESEND_PREFIX,
+    ADMIN_TICKET_PREFIX,
+    ADMIN_TICKETS_CALLBACK,
+    ADMIN_UNBLOCK_PREFIX,
+    ADMIN_USER_PREFIX,
     ASK_DATE,
     ASK_NAME,
     ASK_PLACE,
@@ -84,6 +94,11 @@ from bot_ui import (
     contact_time_keyboard,
     contacts_delete_keyboard,
     contacts_list_keyboard,
+    admin_grant_keyboard,
+    admin_ticket_keyboard,
+    admin_tickets_keyboard,
+    admin_user_keyboard,
+    admin_users_keyboard,
     forecast_interval_keyboard,
     forecast_profile_keyboard,
     format_confirmation,
@@ -105,6 +120,13 @@ from bot_ui import (
 from generator.report import ChartReportService
 from rag.generator import RAGGenerator
 from rag.retriever import QdrantRetriever
+from services.admin import (
+    format_premium_history as format_admin_premium_history,
+    format_ticket,
+    format_ticket_list,
+    format_user_card,
+    format_user_list,
+)
 from services.analytics import format_stats_now
 from services.feedback import (
     format_admin_reply,
@@ -216,6 +238,47 @@ async def _send_previews(message: Message, chunks: list[dict[str, Any]]) -> None
         await message.answer(preview, disable_web_page_preview=True)
 
 
+class AccessGuardMiddleware(BaseMiddleware):
+    """Drop updates from administratively blocked accounts.
+
+    The block flag is cached for a minute, so unblocking takes effect within
+    that window without a query on every update.
+    """
+
+    CACHE_TTL = 60.0
+
+    def __init__(self, store: Any, admin_user_ids: set[int] | None = None) -> None:
+        self.store = store
+        self.admin_user_ids = admin_user_ids or set()
+        self._cache: dict[int, tuple[float, bool | None]] = {}
+
+    async def __call__(self, handler: Any, event: Any, data: dict[str, Any]) -> Any:
+        user = getattr(event, "from_user", None)
+        if user is None or user.is_bot or user.id in self.admin_user_ids:
+            return await handler(event, data)
+        now = monotonic()
+        cached = self._cache.get(user.id)
+        if cached is None or now - cached[0] > self.CACHE_TTL:
+            try:
+                blocked = await self.store.is_user_blocked(user.id)
+            except Exception:
+                logger.debug("blocked-state lookup failed", exc_info=True)
+                blocked = None
+            self._cache[user.id] = (now, blocked)
+        else:
+            blocked = cached[1]
+        if not blocked:
+            return await handler(event, data)
+        try:
+            if isinstance(event, Message):
+                await event.answer("⛔ Доступ к боту ограничен администратором.")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Доступ ограничен", show_alert=True)
+        except Exception:
+            pass
+        return None
+
+
 async def _drop_markup(message: Message | None) -> None:
     """Remove inline buttons from the previous wizard message."""
     if message is None:
@@ -242,7 +305,7 @@ class LastActiveMiddleware(BaseMiddleware):
             if now - self._seen.get(user.id, 0.0) >= self.WINDOW_SECONDS:
                 self._seen[user.id] = now
                 try:
-                    await self.store.touch_user(user.id)
+                    await self.store.touch_user(user.id, getattr(user, "username", None))
                 except Exception:
                     logger.debug("last_active_at update failed", exc_info=True)
         return await handler(event, data)
@@ -265,6 +328,9 @@ def create_dispatcher(
     """Create handlers bound to the single startup instances of the services."""
     dispatcher = Dispatcher()
     if chart_pipeline is not None:
+        dispatcher.update.outer_middleware(
+            AccessGuardMiddleware(chart_pipeline.store, admin_user_ids or set())
+        )
         dispatcher.update.outer_middleware(LastActiveMiddleware(chart_pipeline.store))
     router = Router()
 
@@ -434,6 +500,7 @@ def create_dispatcher(
                 first_name=user.first_name,
                 last_name=user.last_name,
                 display_name=display_name,
+                username=user.username,
                 profile_name=profile_name,
             )
         except BirthInputError as exc:
@@ -517,7 +584,10 @@ def create_dispatcher(
             existing = await chart_pipeline.store.find_user(telegram_id=user.id)
             if existing is None:
                 user_id = await chart_pipeline.store.upsert_user(
-                    telegram_id=user.id, first_name=user.first_name, last_name=user.last_name
+                    telegram_id=user.id,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    username=user.username,
                 )
                 outcome = await apply_referral(
                     chart_pipeline.store,
@@ -933,7 +1003,10 @@ def create_dispatcher(
             return
         try:
             user_id = await chart_pipeline.store.upsert_user(
-                telegram_id=user.id, first_name=user.first_name, last_name=user.last_name
+                telegram_id=user.id,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                username=user.username,
             )
             until = await chart_pipeline.store.complete_payment(
                 charge_id=payment.telegram_payment_charge_id,
@@ -1779,6 +1852,330 @@ def create_dispatcher(
             format_stats_now(metrics, now=now),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+        )
+
+    def _admin_allowed(chat_id: int, user_id: int | None) -> bool:
+        return (admin_chat_id is not None and chat_id == admin_chat_id) or (
+            user_id is not None and bool(admin_user_ids) and user_id in admin_user_ids
+        )
+
+    async def _admin_card(telegram_id: int) -> tuple[str, Any] | None:
+        if chart_pipeline is None:
+            return None
+        profile = await chart_pipeline.store.get_user_profile(telegram_id=telegram_id)
+        if profile is None:
+            return None
+        stats = await chart_pipeline.store.admin_user_stats(profile.user_id)
+        events = await chart_pipeline.store.list_user_events(telegram_id, limit=5)
+        premium_events = await chart_pipeline.store.list_premium_events(
+            profile.user_id, limit=3
+        )
+        text = format_user_card(profile, stats, events=events, premium_events=premium_events)
+        return text, admin_user_keyboard(profile)
+
+    @router.message(Command("users"))
+    async def users_command(message: Message, command: CommandObject) -> None:
+        if not _admin_allowed(
+            message.chat.id, message.from_user.id if message.from_user else None
+        ):
+            return
+        if chart_pipeline is None:
+            await message.answer("База недоступна.")
+            return
+        query = (command.args or "").strip() or None
+        try:
+            users = await chart_pipeline.store.list_users(query=query, limit=10)
+        except Exception:
+            logger.exception("admin user search failed")
+            await message.answer("Не удалось получить список пользователей.")
+            return
+        await message.answer(
+            format_user_list(users, query=query),
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_users_keyboard(users) if users else None,
+            disable_web_page_preview=True,
+        )
+
+    async def _send_ticket_list(message: Message) -> None:
+        if chart_pipeline is None:
+            return
+        tickets = await chart_pipeline.store.list_feedback(status="new", limit=15)
+        await message.answer(
+            format_ticket_list(tickets),
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_tickets_keyboard(tickets) if tickets else None,
+            disable_web_page_preview=True,
+        )
+
+    @router.message(Command("tickets"))
+    async def tickets_command(message: Message) -> None:
+        if not _admin_allowed(
+            message.chat.id, message.from_user.id if message.from_user else None
+        ):
+            return
+        await _send_ticket_list(message)
+
+    @router.callback_query(F.data == ADMIN_TICKETS_CALLBACK)
+    async def tickets_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None or callback.message is None:
+            return
+        tickets = await chart_pipeline.store.list_feedback(status="new", limit=15)
+        await _show_inline(
+            callback,
+            format_ticket_list(tickets),
+            admin_tickets_keyboard(tickets) if tickets else None,
+        )
+
+    @router.callback_query(F.data.startswith(ADMIN_TICKET_PREFIX))
+    async def admin_ticket_view(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None:
+            return
+        try:
+            ticket_id = int(callback.data[len(ADMIN_TICKET_PREFIX):])
+        except ValueError:
+            return
+        ticket = await chart_pipeline.store.get_feedback(ticket_id)
+        if ticket is None:
+            await _show_inline(callback, "Обращение не найдено.", None)
+            return
+        await _show_inline(callback, format_ticket(ticket), admin_ticket_keyboard(ticket.id))
+
+    @router.callback_query(F.data.startswith(ADMIN_RESEND_PREFIX))
+    async def admin_ticket_resend(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None or admin_chat_id is None:
+            return
+        try:
+            ticket_id = int(callback.data[len(ADMIN_RESEND_PREFIX):])
+        except ValueError:
+            return
+        ticket = await chart_pipeline.store.get_feedback(ticket_id)
+        if ticket is None:
+            await _show_inline(callback, "Обращение не найдено.", None)
+            return
+        created = (
+            ticket.created_at.strftime("%d.%m.%Y %H:%M UTC")
+            if ticket.created_at is not None
+            else "—"
+        )
+        try:
+            sent = await bot.send_message(
+                admin_chat_id,
+                format_ticket_notice(
+                    ticket_id=ticket.id,
+                    username=ticket.username,
+                    user_id=ticket.user_id,
+                    message=ticket.message,
+                    created_at=created,
+                ),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            await chart_pipeline.store.attach_feedback_message(
+                ticket.id, admin_chat_id, sent.message_id
+            )
+        except Exception:
+            logger.exception("ticket resend failed")
+            await _show_inline(
+                callback, "Не удалось переслать обращение.", admin_ticket_keyboard(ticket.id)
+            )
+            return
+        await _show_inline(
+            callback,
+            f"📨 Обращение #{ticket.id} переслано в группу — ответьте на него реплаем.",
+            admin_ticket_keyboard(ticket.id),
+        )
+
+    @router.callback_query(F.data.startswith(ADMIN_CLOSE_PREFIX))
+    async def admin_ticket_close(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None or callback.message is None:
+            return
+        try:
+            ticket_id = int(callback.data[len(ADMIN_CLOSE_PREFIX):])
+        except ValueError:
+            return
+        await chart_pipeline.store.mark_feedback_answered(ticket_id)
+        tickets = await chart_pipeline.store.list_feedback(status="new", limit=15)
+        await _show_inline(
+            callback,
+            "☑️ Обращение закрыто.\n\n" + format_ticket_list(tickets),
+            admin_tickets_keyboard(tickets) if tickets else None,
+        )
+
+    @router.callback_query(F.data.startswith(ADMIN_USER_PREFIX))
+    async def admin_user_view(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        try:
+            telegram_id = int(callback.data[len(ADMIN_USER_PREFIX):])
+        except ValueError:
+            return
+        card = await _admin_card(telegram_id)
+        if card is None:
+            await _show_inline(callback, "Пользователь не найден.", None)
+            return
+        await _show_inline(callback, card[0], card[1])
+
+    @router.callback_query(F.data.startswith(ADMIN_PREMIUM_PREFIX))
+    async def admin_premium_menu(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if premium_catalog is None:
+            await _show_inline(callback, "Тарифы недоступны.", None)
+            return
+        try:
+            telegram_id = int(callback.data[len(ADMIN_PREMIUM_PREFIX):])
+        except ValueError:
+            return
+        await _show_inline(
+            callback,
+            "Выберите срок для начисления премиума:",
+            admin_grant_keyboard(telegram_id, premium_catalog),
+        )
+
+    @router.callback_query(F.data.startswith(ADMIN_GRANT_PREFIX))
+    async def admin_grant_premium(callback: CallbackQuery, bot: Bot) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None:
+            return
+        rest = callback.data[len(ADMIN_GRANT_PREFIX):]
+        telegram_part, _, months_part = rest.partition(":")
+        try:
+            telegram_id = int(telegram_part)
+            months = int(months_part)
+        except ValueError:
+            return
+        if not 1 <= months <= 60:
+            await _show_inline(callback, "Некорректный срок.", None)
+            return
+        profile = await chart_pipeline.store.get_user_profile(telegram_id=telegram_id)
+        if profile is None:
+            await _show_inline(callback, "Пользователь не найден.", None)
+            return
+        try:
+            until = await chart_pipeline.store.grant_premium(
+                profile.user_id,
+                months,
+                source="manual",
+                reference=f"admin:{callback.from_user.id}",
+                reason="Выдано администратором",
+            )
+        except Exception:
+            logger.exception("admin premium grant failed")
+            await _show_inline(
+                callback, "Не удалось начислить премиум.", admin_user_keyboard(profile)
+            )
+            return
+        try:
+            await bot.send_message(
+                telegram_id,
+                f"👑 Вам начислен премиум на {months} мес. Приятного пользования!",
+            )
+        except Exception:
+            logger.debug("could not notify the user about the grant", exc_info=True)
+        card = await _admin_card(telegram_id)
+        if card is None:
+            return
+        suffix = f"\n\n✅ Начислено {months} мес."
+        if until is not None:
+            suffix += f" (до {until.strftime('%d.%m.%Y')})"
+        await _show_inline(callback, card[0] + suffix, card[1])
+
+    @router.callback_query(F.data.startswith(ADMIN_BLOCK_PREFIX))
+    async def admin_block_user(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None:
+            return
+        try:
+            telegram_id = int(callback.data[len(ADMIN_BLOCK_PREFIX):])
+        except ValueError:
+            return
+        profile = await chart_pipeline.store.get_user_profile(telegram_id=telegram_id)
+        if profile is None:
+            await _show_inline(callback, "Пользователь не найден.", None)
+            return
+        await chart_pipeline.store.set_user_blocked(profile.user_id, True)
+        card = await _admin_card(telegram_id)
+        if card is None:
+            return
+        await _show_inline(callback, card[0] + "\n\n⛔ Пользователь заблокирован.", card[1])
+
+    @router.callback_query(F.data.startswith(ADMIN_UNBLOCK_PREFIX))
+    async def admin_unblock_user(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None:
+            return
+        try:
+            telegram_id = int(callback.data[len(ADMIN_UNBLOCK_PREFIX):])
+        except ValueError:
+            return
+        profile = await chart_pipeline.store.get_user_profile(telegram_id=telegram_id)
+        if profile is None:
+            await _show_inline(callback, "Пользователь не найден.", None)
+            return
+        await chart_pipeline.store.set_user_blocked(profile.user_id, False)
+        card = await _admin_card(telegram_id)
+        if card is None:
+            return
+        await _show_inline(callback, card[0] + "\n\n✅ Пользователь разблокирован.", card[1])
+
+    @router.callback_query(F.data.startswith(ADMIN_HISTORY_PREFIX))
+    async def admin_premium_history(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if not _admin_allowed(
+            callback.message.chat.id if callback.message else 0, callback.from_user.id
+        ):
+            return
+        if chart_pipeline is None:
+            return
+        try:
+            telegram_id = int(callback.data[len(ADMIN_HISTORY_PREFIX):])
+        except ValueError:
+            return
+        profile = await chart_pipeline.store.get_user_profile(telegram_id=telegram_id)
+        if profile is None:
+            await _show_inline(callback, "Пользователь не найден.", None)
+            return
+        events = await chart_pipeline.store.list_premium_events(profile.user_id, limit=10)
+        await _show_inline(
+            callback, format_admin_premium_history(events), admin_user_keyboard(profile)
         )
 
     @router.message(Command("id"))

@@ -466,6 +466,39 @@ async def _profile_contacts_scenario() -> None:
         assert metrics["charts"] >= 1 and metrics["forecasts"] >= 1
         with pytest.raises(ValueError):
             await store.record_event(TEST_TELEGRAM_ID, "unknown")
+
+        # Admin directory: username, search, block flag, per-user activity.
+        assert await store.upsert_user(telegram_id=TEST_TELEGRAM_ID, username="tester") == user_id
+        with_username = await store.get_user_profile(telegram_id=TEST_TELEGRAM_ID)
+        assert with_username is not None and with_username.username == "tester"
+        by_name = await store.list_users(query="tester", limit=5)
+        assert any(item.user_id == user_id for item in by_name)
+        by_telegram = await store.list_users(query=str(TEST_TELEGRAM_ID), limit=5)
+        assert by_telegram and by_telegram[0].user_id == user_id
+
+        assert await store.set_user_blocked(user_id, True) is True
+        assert await store.is_user_blocked(TEST_TELEGRAM_ID) is True
+        assert await store.set_user_blocked(user_id, False) is True
+        assert await store.is_user_blocked(TEST_TELEGRAM_ID) is False
+        assert await store.is_user_blocked(999999999999) is None
+
+        stats = await store.admin_user_stats(user_id)
+        assert stats["charts"] >= 1 and stats["forecasts"] >= 1
+        assert stats["contacts"] >= 1
+        events = await store.list_user_events(TEST_TELEGRAM_ID, limit=5)
+        assert any(item["event_type"] == "forecast" for item in events)
+
+        # Unanswered tickets are listable by status.
+        open_ticket = await store.add_feedback(
+            TEST_TELEGRAM_ID, "tester", "Ещё одно обращение"
+        )
+        listing = await store.list_feedback(status="new", limit=10)
+        assert any(item.id == open_ticket.id for item in listing)
+        fetched = await store.get_feedback(open_ticket.id)
+        assert fetched is not None and fetched.status == "new"
+        await store.mark_feedback_answered(open_ticket.id)
+        after_close = await store.get_feedback(open_ticket.id)
+        assert after_close is not None and after_close.status == "answered"
     finally:
         if user_id is not None:
             await store.pool.execute("DELETE FROM users WHERE user_id = $1", user_id)

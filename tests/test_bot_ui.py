@@ -4,6 +4,12 @@ from datetime import date, time
 from types import SimpleNamespace
 
 from bot_ui import (
+    ADMIN_BLOCK_PREFIX,
+    ADMIN_GRANT_PREFIX,
+    ADMIN_HISTORY_PREFIX,
+    ADMIN_PREMIUM_PREFIX,
+    ADMIN_UNBLOCK_PREFIX,
+    ADMIN_USER_PREFIX,
     ASK_DATE,
     ASK_NAME,
     ASK_PLACE,
@@ -58,6 +64,9 @@ from bot_ui import (
     UNKNOWN_TIME_CALLBACK,
     build_birth_data,
     confirm_keyboard,
+    admin_grant_keyboard,
+    admin_user_keyboard,
+    admin_users_keyboard,
     contact_card_keyboard,
     contact_pick_keyboard,
     contact_relation_keyboard,
@@ -363,6 +372,40 @@ def test_glossary_keeps_the_terms_and_help_stays_short():
     assert "Словарь новичка" not in HELP
     assert "/glossary" in HELP
     assert len(HELP) < len(GLOSSARY)
+
+
+def test_admin_keyboards():
+    profile = SimpleNamespace(
+        telegram_id=380771563,
+        display_name="Сергей",
+        first_name=None,
+        last_name=None,
+        username="sergey",
+        is_blocked=False,
+    )
+
+    users_markup = admin_users_keyboard([profile])
+    assert callback_data(users_markup) == [f"{ADMIN_USER_PREFIX}380771563"]
+
+    card_markup = admin_user_keyboard(profile)
+    assert callback_data(card_markup) == [
+        f"{ADMIN_PREMIUM_PREFIX}380771563",
+        f"{ADMIN_BLOCK_PREFIX}380771563",
+        f"{ADMIN_HISTORY_PREFIX}380771563",
+    ]
+
+    blocked = SimpleNamespace(**{**profile.__dict__, "is_blocked": True})
+    assert callback_data(admin_user_keyboard(blocked))[1] == (
+        f"{ADMIN_UNBLOCK_PREFIX}380771563"
+    )
+
+    catalog = SimpleNamespace(
+        ordered=lambda: [SimpleNamespace(title="1 месяц", months=1)]
+    )
+    assert callback_data(admin_grant_keyboard(380771563, catalog)) == [
+        f"{ADMIN_GRANT_PREFIX}380771563:1",
+        f"{ADMIN_USER_PREFIX}380771563",
+    ]
 
 
 def test_confirmation_lists_every_field():

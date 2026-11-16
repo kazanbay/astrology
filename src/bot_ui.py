@@ -45,6 +45,17 @@ FORECAST_PROFILE_CALLBACK = "forecast:profile"
 PREMIUM_MENU_CALLBACK = "premium:menu"
 PREMIUM_BUY_PREFIX = "premium:buy:"
 PREMIUM_HISTORY_CALLBACK = "premium:history"
+ADMIN_USER_PREFIX = "admin:user:"
+ADMIN_PREMIUM_PREFIX = "admin:premium:"
+ADMIN_GRANT_PREFIX = "admin:grant:"
+ADMIN_BLOCK_PREFIX = "admin:block:"
+ADMIN_UNBLOCK_PREFIX = "admin:unblock:"
+ADMIN_HISTORY_PREFIX = "admin:history:"
+ADMIN_TICKET_PREFIX = "admin:ticket:"
+ADMIN_RESEND_PREFIX = "admin:resend:"
+ADMIN_CLOSE_PREFIX = "admin:close:"
+ADMIN_TICKETS_CALLBACK = "admin:tickets"
+
 INVITE_CALLBACK = "invite:show"
 GLOSSARY_CALLBACK = "glossary:show"
 HELP_CALLBACK = "help:show"
@@ -392,6 +403,118 @@ def contact_relation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Пропустить", callback_data=CONTACT_SKIP_RELATION_CALLBACK)]
+        ]
+    )
+
+
+def admin_users_keyboard(users: Iterable[Any]) -> InlineKeyboardMarkup:
+    """One button per found user: open the admin card."""
+    rows = []
+    for profile in users:
+        label = " ".join(
+            str(part).strip()
+            for part in (profile.display_name, profile.first_name, profile.last_name)
+            if part
+        ) or (f"@{profile.username}" if profile.username else str(profile.telegram_id))
+        if profile.username:
+            label += f" @{profile.username}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{label} · {profile.telegram_id}"[:64],
+                    callback_data=f"{ADMIN_USER_PREFIX}{profile.telegram_id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_user_keyboard(profile: Any) -> InlineKeyboardMarkup:
+    """Actions on one user: premium, block/unblock, premium history."""
+    telegram_id = profile.telegram_id
+    if profile.is_blocked:
+        block_button = InlineKeyboardButton(
+            text="✅ Разблокировать", callback_data=f"{ADMIN_UNBLOCK_PREFIX}{telegram_id}"
+        )
+    else:
+        block_button = InlineKeyboardButton(
+            text="⛔ Заблокировать", callback_data=f"{ADMIN_BLOCK_PREFIX}{telegram_id}"
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👑 Выдать премиум", callback_data=f"{ADMIN_PREMIUM_PREFIX}{telegram_id}"
+                )
+            ],
+            [block_button],
+            [
+                InlineKeyboardButton(
+                    text="📜 История премиума", callback_data=f"{ADMIN_HISTORY_PREFIX}{telegram_id}"
+                )
+            ],
+        ]
+    )
+
+
+def admin_grant_keyboard(telegram_id: int, catalog: Any) -> InlineKeyboardMarkup:
+    """Premium terms for a manual grant."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=plan.title,
+                callback_data=f"{ADMIN_GRANT_PREFIX}{telegram_id}:{plan.months}",
+            )
+        ]
+        for plan in catalog.ordered()
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад", callback_data=f"{ADMIN_USER_PREFIX}{telegram_id}"
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_tickets_keyboard(tickets: Iterable[Any]) -> InlineKeyboardMarkup:
+    """One button per unanswered ticket."""
+    rows = []
+    for ticket in tickets:
+        who = f"@{ticket.username}" if ticket.username else str(ticket.user_id)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"#{ticket.id} · {who}"[:64],
+                    callback_data=f"{ADMIN_TICKET_PREFIX}{ticket.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_ticket_keyboard(ticket_id: int) -> InlineKeyboardMarkup:
+    """Actions on one ticket: resend to the group or close it."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📨 Переслать в группу",
+                    callback_data=f"{ADMIN_RESEND_PREFIX}{ticket_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="☑️ Закрыть без ответа",
+                    callback_data=f"{ADMIN_CLOSE_PREFIX}{ticket_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ К тикетам", callback_data=ADMIN_TICKETS_CALLBACK
+                )
+            ],
         ]
     )
 

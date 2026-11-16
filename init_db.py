@@ -145,6 +145,11 @@ DDL_STATEMENTS: Sequence[str] = (
     # --- Product analytics -------------------------------------------------
     # last_active_at is touched on every interaction (throttled in the bot).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ",
+    # Admin tooling: Telegram username for search, and the block flag that the
+    # access middleware enforces.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE",
+    "CREATE INDEX IF NOT EXISTS idx_users_username ON users (lower(username))",
     # Feature usage events: chart | forecast | synastry | other.
     """CREATE TABLE IF NOT EXISTS analytics_events (
         event_id SERIAL PRIMARY KEY,

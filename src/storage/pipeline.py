@@ -113,6 +113,7 @@ class ChartPipeline:
         first_name: str | None = None,
         last_name: str | None = None,
         display_name: str | None = None,
+        username: str | None = None,
         profile_name: str = DEFAULT_PROFILE_NAME,
     ) -> ChartResult:
         """Return the chart for ``birth``, computing it only on a cache miss."""
@@ -126,6 +127,7 @@ class ChartPipeline:
             first_name=first_name,
             last_name=last_name,
             display_name=display_name,
+            username=username,
         )
         chart_hash = generate_chart_hash(
             birth.dt_utc,
