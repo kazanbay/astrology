@@ -480,7 +480,7 @@ async def _profile_contacts_scenario() -> None:
         assert await store.is_user_blocked(TEST_TELEGRAM_ID) is True
         assert await store.set_user_blocked(user_id, False) is True
         assert await store.is_user_blocked(TEST_TELEGRAM_ID) is False
-        assert await store.is_user_blocked(999999999999) is None
+        assert await store.is_user_blocked(1234567890123) is None
 
         stats = await store.admin_user_stats(user_id)
         assert stats["charts"] >= 1 and stats["forecasts"] >= 1
