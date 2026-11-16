@@ -142,7 +142,7 @@ SELECT user_id, telegram_id, email, first_name, last_name, display_name, is_prem
        birth_date, birth_time, birth_time_unknown, birth_lat, birth_lon,
        birth_timezone, birth_city, birth_chart_hash,
        profile_changes_count, profile_changes_period, premium_until, referral_code,
-       username, is_blocked
+       username, is_blocked, created_at, last_active_at
   FROM users
  WHERE ($1::bigint IS NOT NULL AND telegram_id = $1::bigint)
     OR ($2::text IS NOT NULL AND email = $2::text)
@@ -618,6 +618,9 @@ class UserProfile:
     premium_until: datetime | None = None
     #: Short public token used in the referral link.
     referral_code: str | None = None
+    #: Account creation and last interaction (admin card, analytics).
+    created_at: datetime | None = None
+    last_active_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready form for LangGraph tools and logs (dates as ISO strings)."""
@@ -1245,6 +1248,8 @@ class PostgresChartStore:
             referral_code=row["referral_code"],
             username=row["username"],
             is_blocked=bool(row["is_blocked"]),
+            created_at=row["created_at"],
+            last_active_at=row["last_active_at"],
         )
 
     async def save_user_natal_profile(
@@ -1418,6 +1423,8 @@ class PostgresChartStore:
                 is_premium=bool(row["is_premium"]),
                 is_blocked=bool(row["is_blocked"]),
                 premium_until=row["premium_until"],
+                created_at=row["created_at"],
+                last_active_at=row["last_active_at"],
             )
             for row in rows
         ]

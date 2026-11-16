@@ -105,7 +105,8 @@ def format_user_card(
         f"👤 <b>{_esc(display_name(profile))}</b>",
         f"{username} · id <code>{_esc(profile.telegram_id)}</code> · db #{_esc(profile.user_id)}",
         f"Статус: {block_state} · Премиум: {premium_state}",
-        f"Создан: {_moment(getattr(profile, 'created_at', None))}",
+        f"Создан: {_moment(getattr(profile, 'created_at', None))} · "
+        f"активность: {_moment(getattr(profile, 'last_active_at', None))}",
         "",
         "<b>Активность бота</b>",
         (
