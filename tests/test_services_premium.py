@@ -26,7 +26,7 @@ def test_load_catalog_reads_plans_and_sorts_by_months(tmp_path):
     path = write_plans(
         tmp_path,
         {
-            "referral_bonus_months": 2,
+            "referral": {"referrer_months": 2, "referee_months": 3},
             "plans": {
                 "12m": {"months": 12, "stars": 800, "title": "Год"},
                 "1m": {"months": 1, "stars": 100},
@@ -36,11 +36,28 @@ def test_load_catalog_reads_plans_and_sorts_by_months(tmp_path):
 
     catalog = load_catalog(path)
 
-    assert catalog.referral_bonus_months == 2
+    assert catalog.referral_referrer_months == 2
+    assert catalog.referral_referee_months == 3
     assert [plan.months for plan in catalog.ordered()] == [1, 12]
     assert catalog.get("1m").stars == 100
     assert catalog.get("1m").title == "1 мес."
     assert catalog.get("nope") is None
+
+
+def test_legacy_flat_referral_keys_are_accepted(tmp_path):
+    path = write_plans(
+        tmp_path,
+        {
+            "referral_bonus_months": 2,
+            "referral_referee_months": 4,
+            "plans": {"1m": {"months": 1, "stars": 5}},
+        },
+    )
+
+    catalog = load_catalog(path)
+
+    assert catalog.referral_referrer_months == 2
+    assert catalog.referral_referee_months == 4
 
 
 def test_env_override_sets_the_path(tmp_path, monkeypatch):
@@ -60,6 +77,7 @@ def test_env_override_sets_the_path(tmp_path, monkeypatch):
         {"plans": {"1m": {"months": 0, "stars": 10}}},
         {"plans": {"1m": {"months": 1, "stars": 0}}},
         {"plans": "nope"},
+        {"plans": {"1m": {"months": 1, "stars": 5}}, "referral": {"referrer_months": -1}},
         {"plans": {"1m": {"months": 1, "stars": 5}}, "referral_bonus_months": -1},
     ],
 )
@@ -91,18 +109,32 @@ def test_status_texts():
     assert "бессрочно" in format_premium_status(profile(is_premium=True))
 
 
-def test_invite_text_mentions_reward_and_stats():
+def test_invite_text_mentions_both_sides_and_stats():
     text = format_invite_text(
         link="https://t.me/bot?start=ref_x",
         invited=2,
         bonus_months=2,
-        reward_months=1,
+        referrer_months=1,
+        referee_months=1,
     )
 
     assert "https://t.me/bot?start=ref_x" in text
-    assert "1 мес" in text
+    assert "вы и друг получите по 1 мес" in text
     assert "приглашено: 2" in text
     assert "2 мес" in text
+
+
+def test_invite_text_distinguishes_asymmetric_rewards():
+    text = format_invite_text(
+        link="https://t.me/bot?start=ref_x",
+        invited=0,
+        bonus_months=0,
+        referrer_months=2,
+        referee_months=1,
+    )
+
+    assert "вы получите 2 мес" in text
+    assert "друг — 1 мес" in text
 
 
 def test_shipped_catalog_is_valid():
@@ -112,6 +144,8 @@ def test_shipped_catalog_is_valid():
     catalog = load_catalog(DEFAULT_PLANS_PATH)
 
     assert catalog.get("1m") is not None
+    assert catalog.referral_referrer_months >= 0
+    assert catalog.referral_referee_months >= 0
     assert [plan.months for plan in catalog.ordered()] == sorted(
         plan.months for plan in catalog.ordered()
     )

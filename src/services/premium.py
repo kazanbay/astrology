@@ -37,10 +37,11 @@ class PremiumPlan:
 
 @dataclass(frozen=True)
 class PremiumCatalog:
-    """Validated plans plus the referral reward."""
+    """Validated plans plus the referral rewards (both sides get premium)."""
 
     plans: dict[str, PremiumPlan]
-    referral_bonus_months: int
+    referral_referrer_months: int
+    referral_referee_months: int
 
     def get(self, key: str) -> PremiumPlan | None:
         return self.plans.get(str(key))
@@ -58,6 +59,28 @@ def _as_int(value: Any, field: str, *, minimum: int) -> int:
     if number < minimum:
         raise PremiumConfigError(f"{field} must be >= {minimum}, got {number}")
     return number
+
+
+def _referral_rewards(raw: dict[str, Any]) -> tuple[int, int]:
+    """Read the two referral rewards, accepting the legacy flat key."""
+    referral = raw.get("referral")
+    if isinstance(referral, dict):
+        referrer = _as_int(
+            referral.get("referrer_months", 1), "referral.referrer_months", minimum=0
+        )
+        referee = _as_int(
+            referral.get("referee_months", 1), "referral.referee_months", minimum=0
+        )
+        return referrer, referee
+    legacy_referrer = _as_int(
+        raw.get("referral_bonus_months", 1), "referral_bonus_months", minimum=0
+    )
+    legacy_referee = _as_int(
+        raw.get("referral_referee_months", legacy_referrer),
+        "referral_referee_months",
+        minimum=0,
+    )
+    return legacy_referrer, legacy_referee
 
 
 def load_catalog(path: str | Path | None = None) -> PremiumCatalog:
@@ -84,10 +107,12 @@ def load_catalog(path: str | Path | None = None) -> PremiumCatalog:
             stars=_as_int(value.get("stars"), f"plan {key!r} stars", minimum=1),
             title=str(value.get("title") or f"{value.get('months')} мес."),
         )
-    bonus = _as_int(
-        raw.get("referral_bonus_months", 1), "referral_bonus_months", minimum=0
+    referrer_months, referee_months = _referral_rewards(raw)
+    return PremiumCatalog(
+        plans=plans,
+        referral_referrer_months=referrer_months,
+        referral_referee_months=referee_months,
     )
-    return PremiumCatalog(plans=plans, referral_bonus_months=bonus)
 
 
 def _local_moment(profile: Any, moment: datetime) -> datetime:
@@ -125,16 +150,22 @@ def format_invite_text(
     link: str,
     invited: int,
     bonus_months: int,
-    reward_months: int,
+    referrer_months: int,
+    referee_months: int,
 ) -> str:
     """Referral block for /invite and the premium screen."""
+    if referrer_months == referee_months:
+        reward = f"вы и друг получите по {referrer_months} мес. премиума — бесплатно."
+    else:
+        reward = (
+            f"вы получите {referrer_months} мес. премиума, а друг — {referee_months} мес."
+        )
     lines = [
         "🔗 Ваша реферальная ссылка:",
         link,
         "",
-        f"🎁 За каждого друга, который придёт по вашей ссылке, вы получаете "
-        f"{reward_months} мес. премиума — бесплатно.",
-        f"Уже приглашено: {invited} · начислено: {bonus_months} мес.",
+        f"🎁 За каждого друга, который придёт по ссылке, {reward}",
+        f"Уже приглашено: {invited} · начислено вам: {bonus_months} мес.",
     ]
     return "\n".join(lines)
 

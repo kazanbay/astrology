@@ -61,36 +61,58 @@ def test_code_is_created_once_and_reused():
     assert 0 < len(first) <= 16
 
 
-def test_apply_referral_grants_the_bonus():
+def test_apply_referral_grants_both_sides_once():
     store = FakeReferralStore(referrer=(5, 555))
 
-    outcome = asyncio.run(apply_referral(store, referee_user_id=1, code="c", bonus_months=1))
+    outcome = asyncio.run(
+        apply_referral(
+            store, referee_user_id=1, code="c", referrer_months=1, referee_months=1
+        )
+    )
 
     assert outcome.status == "granted"
     assert outcome.referrer_telegram_id == 555
-    assert store.grants[0][0] == 5
-    assert store.grants[0][1] == 1
-    assert store.grants[0][2]["source"] == "referral"
-    assert store.grants[0][2]["actor_user_id"] == 1
-    assert store.grants[0][2]["reference"] == "c"
+    assert outcome.referrer_months == 1 and outcome.referee_months == 1
+    assert len(store.grants) == 2
+    referrer_grant, referee_grant = store.grants
+    assert referrer_grant[0] == 5 and referrer_grant[1] == 1
+    assert referrer_grant[2]["source"] == "referral"
+    assert referrer_grant[2]["actor_user_id"] == 1
+    assert referrer_grant[2]["reference"] == "c"
+    assert referee_grant[0] == 1 and referee_grant[1] == 1
+    assert referee_grant[2]["actor_user_id"] == 5
 
-    again = asyncio.run(apply_referral(store, referee_user_id=1, code="c", bonus_months=1))
+    again = asyncio.run(
+        apply_referral(
+            store, referee_user_id=1, code="c", referrer_months=1, referee_months=1
+        )
+    )
 
     assert again.status == "skipped"
     assert again.reason == "already_referred"
-    assert len(store.grants) == 1
+    assert len(store.grants) == 2
 
 
 def test_self_and_unknown_referrals_are_skipped():
     store = FakeReferralStore(referrer=(1, 42))
 
-    outcome = asyncio.run(apply_referral(store, referee_user_id=1, code="c", bonus_months=1))
+    outcome = asyncio.run(
+        apply_referral(
+            store, referee_user_id=1, code="c", referrer_months=1, referee_months=1
+        )
+    )
 
     assert outcome.status == "skipped" and outcome.reason == "self_referral"
     assert store.grants == []
 
     unknown = asyncio.run(
-        apply_referral(FakeReferralStore(), referee_user_id=2, code="c", bonus_months=1)
+        apply_referral(
+            FakeReferralStore(),
+            referee_user_id=2,
+            code="c",
+            referrer_months=1,
+            referee_months=1,
+        )
     )
 
     assert unknown.status == "skipped" and unknown.reason == "unknown_code"

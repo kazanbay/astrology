@@ -58,7 +58,8 @@ class ReferralOutcome:
     status: str  # "granted" | "skipped"
     reason: str | None = None
     referrer_telegram_id: int | None = None
-    bonus_months: int = 0
+    referrer_months: int = 0
+    referee_months: int = 0
 
 
 async def apply_referral(
@@ -66,9 +67,10 @@ async def apply_referral(
     *,
     referee_user_id: int,
     code: str,
-    bonus_months: int,
+    referrer_months: int,
+    referee_months: int,
 ) -> ReferralOutcome:
-    """Attribute a new account to the inviter and pay the bonus once."""
+    """Attribute a new account to the inviter and pay both sides once."""
     referrer = await store.find_user_by_referral_code(code)
     if referrer is None:
         return ReferralOutcome(status="skipped", reason="unknown_code")
@@ -78,20 +80,29 @@ async def apply_referral(
     created = await store.create_referral(
         referrer_user_id=referrer_user_id,
         referee_user_id=referee_user_id,
-        bonus_months=bonus_months,
+        bonus_months=referrer_months,
     )
     if not created:
         return ReferralOutcome(status="skipped", reason="already_referred")
     await store.grant_premium(
         referrer_user_id,
-        bonus_months,
+        referrer_months,
         source="referral",
         actor_user_id=referee_user_id,
         reference=code,
         reason="Реферальный бонус за приглашённого пользователя",
     )
+    await store.grant_premium(
+        referee_user_id,
+        referee_months,
+        source="referral",
+        actor_user_id=referrer_user_id,
+        reference=code,
+        reason="Бонус за регистрацию по приглашению",
+    )
     return ReferralOutcome(
         status="granted",
         referrer_telegram_id=referrer_telegram_id,
-        bonus_months=bonus_months,
+        referrer_months=referrer_months,
+        referee_months=referee_months,
     )

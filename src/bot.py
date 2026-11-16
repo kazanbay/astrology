@@ -505,7 +505,7 @@ def create_dispatcher(
     async def start_referral(
         message: Message, command: CommandObject, state: FSMContext, bot: Bot
     ) -> None:
-        """First contact via an invite link: attribute the account, reward the inviter."""
+        """First contact via an invite link: both sides get the referral premium."""
         await state.clear()
         code = parse_referral_payload(command.args)
         user = message.from_user
@@ -523,18 +523,27 @@ def create_dispatcher(
                     chart_pipeline.store,
                     referee_user_id=user_id,
                     code=code,
-                    bonus_months=premium_catalog.referral_bonus_months,
+                    referrer_months=premium_catalog.referral_referrer_months,
+                    referee_months=premium_catalog.referral_referee_months,
                 )
         except Exception:
             logger.exception("referral registration failed")
         await _send_ui(message, GREETING)
-        if outcome is None or outcome.status != "granted" or not outcome.referrer_telegram_id:
+        if outcome is None or outcome.status != "granted":
+            return
+        if outcome.referee_months:
+            await message.answer(
+                f"🎁 Вам начислено {outcome.referee_months} мес. премиума за регистрацию "
+                "по приглашению. Приятного пользования!"
+            )
+        if not outcome.referrer_telegram_id:
             return
         try:
             await bot.send_message(
                 outcome.referrer_telegram_id,
                 "🎉 По вашей ссылке пришёл новый пользователь!\n"
-                f"Начислено {outcome.bonus_months} мес. премиума.",
+                f"Вам начислено {outcome.referrer_months} мес. премиума, "
+                f"другу — {outcome.referee_months} мес.",
             )
         except Exception:
             logger.exception("referral notification failed")
@@ -791,11 +800,25 @@ def create_dispatcher(
             await start_wizard(callback.message, state)
 
     def _premium_view(profile: Any) -> tuple[str, Any]:
+        referral_line = "🎁 Пригласите друга — премиум получите и вы, и друг (/invite)."
+        if premium_catalog is not None:
+            referrer = premium_catalog.referral_referrer_months
+            referee = premium_catalog.referral_referee_months
+            if referrer == referee:
+                referral_line = (
+                    f"🎁 Пригласите друга — вы и друг получите по {referrer} мес. "
+                    "премиума бесплатно (/invite)."
+                )
+            else:
+                referral_line = (
+                    f"🎁 Пригласите друга — вы получите {referrer} мес. премиума, "
+                    f"а друг — {referee} мес. (/invite)."
+                )
         text = "\n\n".join(
             [
                 format_premium_status(profile),
                 "Премиум даёт: прогнозы для контактов, синастрию и персональные разборы.",
-                "🎁 Пригласите друга — и получите месяц премиума бесплатно (/invite).",
+                referral_line,
                 "Выберите срок — оплата звёздами Telegram:",
             ]
         )
@@ -948,7 +971,8 @@ def create_dispatcher(
             link=referral_link(bot_username, code),
             invited=stats["invited"],
             bonus_months=stats["bonus_months"],
-            reward_months=premium_catalog.referral_bonus_months,
+            referrer_months=premium_catalog.referral_referrer_months,
+            referee_months=premium_catalog.referral_referee_months,
         )
 
     @router.message(Command("invite"))
